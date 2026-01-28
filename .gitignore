@@ -50,6 +50,7 @@ document_experimentation.ipynb
 
 # API Keys and credentials
 *.json
+!configs/extraction_config.json
 !package.json
 !package-lock.json
 !tsconfig.json
@@ -64,7 +65,9 @@ test_docs/
 3C_testdaten_jpg/
 3C_testdaten_json/
 3C_testdaten_md/
+3C_testdaten_pdf/
 converted_images/
+.claude/
 extraction_suite/
 viz_pages/
 temp/

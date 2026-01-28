@@ -1,0 +1,102 @@
+from openai import AzureOpenAI
+from utils import convert_file_to_images, extract_json_from_response
+import base64
+from prompt_building.prompt_building import build_prompt_from_config
+import json
+import re
+
+
+class AzureInvoiceProcessor:
+    def __init__(self, model="gpt-4", name="azure_processor", vision_model=None, api_key=None, azure_endpoint=None, api_version="2024-02-15-preview", ocr_engine=None):
+        """
+        Initialize Azure OpenAI client for invoice processing.
+        
+        Args:
+            model: Default text model name (e.g., "gpt-4")
+            name: Processor name identifier
+            vision_model: Vision model name for image processing (e.g., "gpt-4o")
+            api_key: Azure OpenAI API key
+            azure_endpoint: Azure OpenAI endpoint URL (e.g., "https://your-resource.openai.azure.com/")
+            api_version: Azure API version (default: "2024-02-15-preview")
+            ocr_engine: Optional OCR engine (not used in current implementation)
+        """
+        if not api_key:
+            raise ValueError("Azure API key is required")
+        if not azure_endpoint:
+            raise ValueError("Azure endpoint is required")
+
+        # If caller passed None/"" (e.g., missing env var), fall back to default.
+        if not api_version:
+            api_version = "2024-02-15-preview"
+            
+        self.client = AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version
+        )
+        self.model = model
+        self.name = name
+        self.vision_model = vision_model
+        self.api_version = api_version
+
+
+    def extract(self, img_file_path: str, use_ocr=True, use_vision=True, markdown_text="", prompt="", animal_information={}) -> str:
+        """
+        Extract invoice data from an image file using Azure OpenAI.
+        
+        Args:
+            img_file_path: Path to the image file (JPG, PNG, or PDF)
+            use_ocr: Whether to use OCR text in the prompt
+            use_vision: Whether to include images in the vision API call
+            markdown_text: OCR-extracted markdown text
+            prompt: Custom prompt (if empty, will be built from config)
+            animal_information: Additional context information
+            
+        Returns:
+            JSON string containing extracted invoice data
+        """
+        if use_ocr and markdown_text == "":
+            raise ValueError("Not enough markdown text information to extract data from document.")
+        if use_vision and not self.vision_model:
+            raise ValueError("No vision model configured")
+
+        if prompt == "":
+            prompt = build_prompt_from_config("configs/extraction_config.json", use_ocr=use_ocr, use_vision=use_vision, ocr_text=markdown_text, animal_information=animal_information)
+
+        content_blocks = [{"type": "text", "text": prompt}]
+
+        if use_vision:
+            images = convert_file_to_images(img_file_path)      
+            for img_path in images:
+                with open(img_path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                    content_blocks.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{b64}",
+                            "detail": "auto"
+                        }
+                    }
+                )
+        model = self.vision_model if use_vision else self.model
+        response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": content_blocks}],
+                temperature=0
+            )
+
+        usage = response.usage
+        prompt_tokens = usage.prompt_tokens
+        completion_tokens = usage.completion_tokens
+        # total_tokens = usage.total_tokens
+
+        # Model-specific pricing (USD per 1K tokens)
+        # Note: Azure pricing may differ from OpenAI pricing
+        PROMPT_RATE = 0.00015
+        COMPLETION_RATE = 0.0006
+        cost = (prompt_tokens / 1000 * PROMPT_RATE) + (completion_tokens / 1000 * COMPLETION_RATE)
+        #print(f"Cost of this call: ${cost:.6f}")
+
+        #result = response.choices[0].message.content
+        json_result = extract_json_from_response(response.choices[0].message.content)
+        return json_result

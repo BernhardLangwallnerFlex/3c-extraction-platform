@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 from processors.azure_processor import AzureInvoiceProcessor
-from storage.storage import S3Storage
+from storage.storage import S3Storage, AzureBlobStorage
 
 # Load API key from .env
 load_dotenv()
@@ -29,13 +29,14 @@ file_path = input_folder + file
 # initialize OCR engines
 agentic_ocr_engine = OCRAgenticProcessor(name = "agentic_ocr")
 
-storage = S3Storage(region_name="eu-central-1")
+#storage = S3Storage(region_name="eu-central-1")
+storage = AzureBlobStorage(account_name=os.getenv("AZURE_STORAGE_ACCOUNT_NAME"), account_key=os.getenv("AZURE_STORAGE_ACCOUNT_KEY"))
 
 inv = Invoice(
-    file_key="s3://3c-vetcostcheck/230041495V_Splitt.pdf",
+    file_key="az://invoices/230075012T_Splitt.pdf",
     ocr_engine=agentic_ocr_engine,
     storage=storage,
-    output_prefix="s3://3c-vetcostcheck/processed/"  # see note below
+    output_prefix="az://invoices/processed/"  # see note below
 )
 
 inv.extract_markdown()

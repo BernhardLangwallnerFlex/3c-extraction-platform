@@ -3,11 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Union, Optional
+from typing import Protocol, Optional
 import io
 import os
 import shutil
 import tempfile
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # S3 is optional until you use it
 try:
@@ -16,7 +19,16 @@ except Exception:  # pragma: no cover
     boto3 = None
 
 
-StorageKey = str  # could be "local:/abs/path/file.pdf" or "s3://bucket/key.pdf" or just a plain path
+try:
+    from azure.storage.blob import BlobServiceClient, ContentSettings
+    from azure.core.exceptions import ResourceNotFoundError
+except Exception:  # pragma: no cover
+    BlobServiceClient = None
+    ContentSettings = None
+    ResourceNotFoundError = None
+
+
+StorageKey = str  # could be a plain local path, "s3://bucket/key.pdf", or "az://container/blob.pdf"
 
 
 class StorageBackend(Protocol):
@@ -46,6 +58,23 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
     if not bucket or not key:
         raise ValueError(f"Invalid s3 uri: {uri}")
     return bucket, key
+
+
+def is_az_uri(key: str) -> bool:
+    return key.startswith("az://")
+
+
+def parse_az_uri(uri: str) -> tuple[str, str]:
+    """
+    az://container/some/path/file.pdf -> ("container", "some/path/file.pdf")
+    """
+    if not uri.startswith("az://"):
+        raise ValueError(f"Not an az uri: {uri}")
+    without = uri[len("az://") :]
+    container, _, blob = without.partition("/")
+    if not container or not blob:
+        raise ValueError(f"Invalid az uri: {uri}")
+    return container, blob
 
 
 @dataclass
@@ -135,6 +164,74 @@ class S3Storage(StorageBackend):
         local_path.parent.mkdir(parents=True, exist_ok=True)
         with local_path.open("wb") as f:
             self.s3.download_fileobj(bucket, obj_key, f)
+        return local_path
+
+    def cleanup_tmp(self) -> None:
+        if self._tmp_dir.exists():
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+
+
+@dataclass
+class AzureBlobStorage(StorageBackend):
+    """
+    key is expected as az://<container>/<blob_path>
+    Auth uses account name + account key.
+    """
+
+    account_name: str
+    account_key: str
+
+    def __post_init__(self):
+        if BlobServiceClient is None:
+            raise ImportError("azure-storage-blob not installed. `pip install azure-storage-blob`")
+
+        self._service = BlobServiceClient(
+            account_url=f"https://{self.account_name}.blob.core.windows.net",
+            credential=self.account_key,
+        )
+        self._tmp_dir = Path(tempfile.mkdtemp(prefix="invoice_az_"))
+
+    def _blob_client(self, key: StorageKey):
+        container, blob = parse_az_uri(key)
+        return self._service.get_blob_client(container=container, blob=blob), container, blob
+
+    def read_bytes(self, key: StorageKey) -> bytes:
+        blob_client, _, _ = self._blob_client(key)
+        return blob_client.download_blob().readall()
+
+    def write_bytes(self, key: StorageKey, data: bytes, content_type: Optional[str] = None) -> None:
+        blob_client, _, _ = self._blob_client(key)
+        kwargs = {"overwrite": True}
+        if content_type and ContentSettings is not None:
+            kwargs["content_settings"] = ContentSettings(content_type=content_type)
+        blob_client.upload_blob(data, **kwargs)
+
+    def write_text(self, key: StorageKey, text: str, encoding: str = "utf-8") -> None:
+        self.write_bytes(key, text.encode(encoding), content_type="text/plain; charset=utf-8")
+
+    def delete(self, key: StorageKey) -> None:
+        blob_client, _, _ = self._blob_client(key)
+        blob_client.delete_blob()
+
+    def exists(self, key: StorageKey) -> bool:
+        blob_client, _, _ = self._blob_client(key)
+        try:
+            blob_client.get_blob_properties()
+            return True
+        except Exception as e:
+            # Prefer the specific Azure exception if available, otherwise be permissive like S3Storage.
+            if ResourceNotFoundError is not None and isinstance(e, ResourceNotFoundError):
+                return False
+            return False
+
+    def materialize_to_local(self, key: StorageKey, suffix: str = "") -> Path:
+        _, _, blob = self._blob_client(key)
+        filename = Path(blob).name
+        if suffix and not filename.endswith(suffix):
+            filename = filename + suffix
+        local_path = self._tmp_dir / filename
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(self.read_bytes(key))
         return local_path
 
     def cleanup_tmp(self) -> None:

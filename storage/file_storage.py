@@ -6,7 +6,14 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from storage.storage import LocalStorage, S3Storage  # adjust to your actual module
+from storage.storage import LocalStorage, S3Storage, AzureBlobStorage  # adjust to your actual module
+
+
+def _require_env(name: str) -> str:
+    val = os.getenv(name)
+    if not val:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return val
 
 
 def _build_storage():
@@ -14,21 +21,29 @@ def _build_storage():
     if backend == "s3":
         region = os.getenv("AWS_DEFAULT_REGION", "eu-central-1")
         return S3Storage(region_name=region)
+    if backend == "azure":
+        return AzureBlobStorage(
+            account_name=_require_env("AZURE_STORAGE_ACCOUNT_NAME"),
+            account_key=_require_env("AZURE_STORAGE_ACCOUNT_KEY"),
+        )
     return LocalStorage(base_dir=Path(os.getenv("LOCAL_STORAGE_BASE_DIR", Path.cwd())))
 
 
 def _uploads_prefix() -> str:
     backend = os.getenv("STORAGE_BACKEND", "local").lower()
-    prefix = os.getenv("UPLOADS_PREFIX", "uploads").rstrip("/")
 
-    # Guardrail: don't allow s3:// prefix in local mode (common 500 cause)
-    if backend != "s3" and prefix.startswith("s3://"):
+    if backend == "azure":
+        prefix = os.getenv("AZURE_INPUT_PREFIX", "uploads").rstrip("/")
+    elif backend == "s3":
+        prefix = os.getenv("S3_INPUT_PREFIX", "uploads").rstrip("/")
+    else:
+        prefix = os.getenv("LOCAL_STORAGE_BASE_DIR", Path.cwd()).rstrip("/")
+
+    if backend == "azure" and not prefix.startswith("az://"):
         raise RuntimeError(
-            f"UPLOADS_PREFIX is '{prefix}' but STORAGE_BACKEND is '{backend}'. "
-            "Set STORAGE_BACKEND=s3 or change UPLOADS_PREFIX to a local folder like 'uploads'."
+            f"STORAGE_BACKEND is 'azure' but UPLOADS_PREFIX is '{prefix}'. "
+            "Set UPLOADS_PREFIX like 'az://<container>/uploads'."
         )
-
-    # Guardrail: in s3 mode, require s3:// prefix
     if backend == "s3" and not prefix.startswith("s3://"):
         raise RuntimeError(
             f"STORAGE_BACKEND is 's3' but UPLOADS_PREFIX is '{prefix}'. "

@@ -161,6 +161,9 @@ class Invoice:
         for subdoc in self.subdocuments:
             # processor.extract expects a local filename -> materialize image to local
             local_image = self.storage.materialize_to_local(subdoc.image_key)
+            local_pdf = self.storage.materialize_to_local(subdoc.pdf_key)
+
+            ocr_text = subdoc.markdown #self.ocr_engine.extract_text(local_pdf)
 
             extraction_dict = processor.extract(
                 str(local_image),
@@ -168,7 +171,7 @@ class Invoice:
                 use_vision=True,
                 markdown_text=subdoc.markdown,
                 prompt=get_full_prompt(
-                    ocr_text=subdoc.markdown,
+                    ocr_text=ocr_text,
                     animal_information=self.analysis_dict.get("animals"),
                 ),
                 animal_information=self.analysis_dict.get("animals"),

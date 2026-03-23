@@ -51,6 +51,10 @@ urllib3==1.26.20
 requests==2.32.5
 requests-toolbelt==1.0.0
 
+# --- Monitoring ---
+sentry-sdk[fastapi]
+structlog
+
 # --- Misc transitive deps ---
 six==1.17.0
 packaging==25.0

@@ -1,10 +1,12 @@
 import os
+import time
 from pathlib import Path
 from dotenv import load_dotenv
+import structlog
 
-from storage.file_storage import get_file_key  # <-- NEW (was get_file_path)
+from storage.file_storage import get_file_key
 
-from storage.storage import LocalStorage, S3Storage, AzureBlobStorage  # adjust import to your actual module names
+from storage.storage import LocalStorage, S3Storage, AzureBlobStorage
 from invoice import Invoice
 
 from ocr.ocr_agentic import OCRAgenticProcessor
@@ -12,6 +14,8 @@ from processors.azure_processor import AzureInvoiceProcessor
 from utils import ensure_json_serializable
 
 load_dotenv()
+
+log = structlog.get_logger()
 
 
 def _require_env(name: str) -> str:
@@ -22,10 +26,6 @@ def _require_env(name: str) -> str:
 
 
 def _build_storage():
-    """
-    Decide storage backend from env. Keep it dead simple:
-    STORAGE_BACKEND=local|s3|azure
-    """
     backend = os.getenv("STORAGE_BACKEND", "local").lower()
 
     if backend == "s3":
@@ -38,7 +38,6 @@ def _build_storage():
             account_key=_require_env("AZURE_STORAGE_ACCOUNT_KEY"),
         )
 
-    # default: local
     base_dir = Path(os.getenv("LOCAL_STORAGE_BASE_DIR", Path.cwd()))
     return LocalStorage(base_dir=base_dir)
 
@@ -65,15 +64,14 @@ def _validate_output_prefix(output_prefix: str) -> None:
 
 
 def process_file(file_id: str):
-    # 1) Resolve file_id -> storage key (local path or s3://...)
+    job_start = time.monotonic()
     invoice = None
+    log.info("job_started", file_id=file_id)
+
     try:
         file_key = get_file_key(file_id)
-
-        # 2) Build storage backend
         storage = _build_storage()
 
-        # 3) Engines / processors
         agentic_ocr_engine = OCRAgenticProcessor(name="agentic_ocr")
 
         processor = AzureInvoiceProcessor(
@@ -85,10 +83,6 @@ def process_file(file_id: str):
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )
 
-        # 4) Output prefix (local folder or s3 prefix)
-        #    Examples:
-        #      local: output_prefix="outputs"
-        #      s3:    output_prefix="s3://my-bucket/processed/invoices"
         backend = os.getenv("STORAGE_BACKEND", "local").lower()
         if backend == "s3":
             output_prefix = os.getenv("S3_OUTPUT_PREFIX")
@@ -98,25 +92,39 @@ def process_file(file_id: str):
             output_prefix = Path(os.getenv("LOCAL_STORAGE_BASE_DIR", Path.cwd()))
         _validate_output_prefix(output_prefix)
 
-        # 5) Run pipeline
         invoice = Invoice(
             file_key=file_key,
             ocr_engine=agentic_ocr_engine,
             storage=storage,
             output_prefix=output_prefix,
         )
+        log.info("invoice_created", file_id=file_id, pages=invoice.page_number, file_type=invoice.file_type)
 
+        t = time.monotonic()
         invoice.extract_markdown()
-        invoice.analyze_document()
-        invoice.split_document_into_invoices()
-        invoice.extract_data_from_subdocuments(processor)
+        log.info("ocr_completed", file_id=file_id, duration_s=round(time.monotonic() - t, 2), pages=len(invoice.markdown_by_page))
 
-    # (optional) keep artifacts in S3 but remove local temps
-    # invoice.cleanup_temporary_files()  # enable if desired
-    finally:    
+        t = time.monotonic()
+        invoice.analyze_document()
+        subdoc_count = len(invoice.analysis_dict.get("invoice_pages", {}))
+        log.info("analysis_completed", file_id=file_id, duration_s=round(time.monotonic() - t, 2), subdocuments=subdoc_count)
+
+        t = time.monotonic()
+        invoice.split_document_into_invoices()
+        log.info("split_completed", file_id=file_id, duration_s=round(time.monotonic() - t, 2), subdocuments=len(invoice.subdocuments))
+
+        t = time.monotonic()
+        invoice.extract_data_from_subdocuments(processor)
+        log.info("extraction_completed", file_id=file_id, duration_s=round(time.monotonic() - t, 2), subdocuments=len(invoice.subdocuments))
+
+        total_duration = round(time.monotonic() - job_start, 2)
+        log.info("job_completed", file_id=file_id, duration_s=total_duration, subdocuments=len(invoice.subdocuments))
+
+    except Exception:
+        log.exception("job_failed", file_id=file_id, duration_s=round(time.monotonic() - job_start, 2))
+        raise
+    finally:
         if invoice is not None:
             invoice.cleanup_local()
-        else:
-            print("Invoice is None")
 
     return ensure_json_serializable(invoice.extraction_result_json)

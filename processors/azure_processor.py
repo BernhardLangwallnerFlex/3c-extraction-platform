@@ -4,6 +4,9 @@ import base64
 from prompt_building.prompt_building import build_prompt_from_config
 import json
 import re
+import structlog
+
+log = structlog.get_logger()
 
 
 class AzureInvoiceProcessor:
@@ -88,15 +91,18 @@ class AzureInvoiceProcessor:
         usage = response.usage
         prompt_tokens = usage.prompt_tokens
         completion_tokens = usage.completion_tokens
-        # total_tokens = usage.total_tokens
 
-        # Model-specific pricing (USD per 1K tokens)
-        # Note: Azure pricing may differ from OpenAI pricing
         PROMPT_RATE = 0.00015
         COMPLETION_RATE = 0.0006
         cost = (prompt_tokens / 1000 * PROMPT_RATE) + (completion_tokens / 1000 * COMPLETION_RATE)
-        #print(f"Cost of this call: ${cost:.6f}")
 
-        #result = response.choices[0].message.content
+        log.info(
+            "llm_call",
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=round(cost, 6),
+        )
+
         json_result = extract_json_from_response(response.choices[0].message.content)
         return json_result

@@ -8,8 +8,7 @@ from storage.storage import LocalStorage, S3Storage, AzureBlobStorage  # adjust 
 from invoice import Invoice
 
 from ocr.ocr_agentic import OCRAgenticProcessor
-from ocr.ocr_docling import DoclingOCR
-from processors.gpt_processor import GPTInvoiceProcessor
+from processors.azure_processor import AzureInvoiceProcessor
 from utils import ensure_json_serializable
 
 load_dotenv()
@@ -76,13 +75,14 @@ def process_file(file_id: str):
 
         # 3) Engines / processors
         agentic_ocr_engine = OCRAgenticProcessor(name="agentic_ocr")
-        docling_ocr_engine = DoclingOCR(name="docling_ocr")
 
-        processor = GPTInvoiceProcessor(
-            name="gpt_processor",
-            api_key=os.getenv("OPENAI_API_KEY"),
-            model=os.getenv("OPENAI_TEXT_MODEL", "gpt-4"),
+        processor = AzureInvoiceProcessor(
+            name="azure_processor",
+            api_key=os.getenv("AZURE_OPENAI_KEY"),
+            model=os.getenv("OPENAI_TEXT_MODEL", "gpt-4.1"),
             vision_model=os.getenv("OPENAI_VISION_MODEL", "gpt-4o"),
+            azure_endpoint=os.getenv("AZURE_ENDPOINT"),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )
 
         # 4) Output prefix (local folder or s3 prefix)

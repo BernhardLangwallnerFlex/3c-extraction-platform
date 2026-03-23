@@ -8,7 +8,7 @@ import tempfile
 import fitz
 from PIL import Image
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AzureOpenAI
 import shutil
 from ocr.base_ocr import BaseOCREngine
 from utils import extract_json_from_response
@@ -83,9 +83,13 @@ class Invoice:
             markdown_text=self.markdown_with_pages_numbers,
         )
 
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client = AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_KEY"),
+            azure_endpoint=os.getenv("AZURE_ENDPOINT"),
+            api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+        )
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model=os.getenv("OPENAI_VISION_MODEL", "gpt-4o"),
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
         )

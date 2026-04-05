@@ -31,7 +31,7 @@ queue_name = os.getenv("RQ_QUEUE_NAME", "invoice-jobs")
 if __name__ == "__main__":
     log = structlog.get_logger()
     log.info("worker_starting", queue=queue_name)
-    redis_conn = Redis.from_url(os.environ["REDIS_URL"])
+    redis_conn = Redis.from_url(os.environ["REDIS_URL"], socket_connect_timeout=5, socket_timeout=5)
     queues = [Queue(queue_name, connection=redis_conn)]
     worker = Worker(queues, connection=redis_conn)
     worker.work()

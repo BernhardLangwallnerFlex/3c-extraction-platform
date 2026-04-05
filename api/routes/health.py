@@ -20,7 +20,7 @@ def ready(response: Response):
     try:
         redis_url = os.environ.get("REDIS_URL")
         if redis_url:
-            conn = Redis.from_url(redis_url)
+            conn = Redis.from_url(redis_url, socket_connect_timeout=5, socket_timeout=5)
             conn.ping()
             checks["redis"] = "ok"
         else:

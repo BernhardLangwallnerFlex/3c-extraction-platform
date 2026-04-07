@@ -42,7 +42,8 @@ class GPTInvoiceProcessor:
         response = self.client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": content_blocks}],
-                temperature=0
+                temperature=0,
+                seed=42
             )
 
         usage = response.usage

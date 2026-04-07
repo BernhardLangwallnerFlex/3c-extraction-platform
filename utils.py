@@ -8,6 +8,21 @@ import csv
 from PIL import Image
 
 
+def strip_ocr_element_ids(text: str) -> str:
+    """Remove LandingAI element anchors and table cell IDs from OCR markdown.
+
+    These are random UUIDs regenerated on every parse call, adding noise
+    and wasting tokens without contributing useful content.
+    """
+    # Remove <a id='...'></a> anchor tags (with optional whitespace/newlines around them)
+    text = re.sub(r"\s*<a id=['\"][^'\"]*['\"]></a>\s*", "\n", text)
+    # Remove id="..." attributes from table elements (<td id="3-a"> -> <td>, <table id="0-1"> -> <table>)
+    text = re.sub(r'(<(?:t[dhr]|table))\s+id="[^"]*"', r'\1', text)
+    # Collapse multiple blank lines into one
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def ensure_json_serializable(obj):
     try:
         json.dumps(obj)

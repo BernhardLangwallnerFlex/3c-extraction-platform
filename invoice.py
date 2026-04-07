@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from pathlib import Path
 import os
@@ -11,7 +12,7 @@ from dotenv import load_dotenv
 from openai import AzureOpenAI
 import shutil
 from ocr.base_ocr import BaseOCREngine
-from utils import extract_json_from_response
+from utils import extract_json_from_response, strip_ocr_element_ids
 from prompt_building.prompt_building import build_prompt_for_analyze_document, get_full_prompt
 
 from storage.storage import StorageBackend, LocalStorage, StorageKey
@@ -71,8 +72,8 @@ class Invoice:
 
     def extract_markdown(self):
         markdown, markdown_by_page = self.ocr_engine.extract_text(self)
-        self.markdown = markdown
-        self.markdown_by_page = markdown_by_page
+        self.markdown = strip_ocr_element_ids(markdown)
+        self.markdown_by_page = {p: strip_ocr_element_ids(txt) for p, txt in markdown_by_page.items()}
         self.markdown_with_pages_numbers = "\n\n---\n\n".join(
             [f"--- PAGE {page} ---\n: {txt}" for page, txt in markdown_by_page.items()]
         )
@@ -83,6 +84,23 @@ class Invoice:
             markdown_text=self.markdown_with_pages_numbers,
         )
 
+        # Build multimodal content: text prompt + one low-res image per page
+        content_blocks = [{"type": "text", "text": prompt}]
+
+        if self.file_type == "pdf":
+            with fitz.open(self.local_input_path) as doc:
+                for page in doc:
+                    pix = page.get_pixmap(dpi=150)
+                    img_bytes = pix.tobytes("png")
+                    b64 = base64.b64encode(img_bytes).decode("utf-8")
+                    content_blocks.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{b64}",
+                            "detail": "low",
+                        },
+                    })
+
         client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_KEY"),
             azure_endpoint=os.getenv("AZURE_ENDPOINT"),
@@ -90,8 +108,9 @@ class Invoice:
         )
         response = client.chat.completions.create(
             model=os.getenv("OPENAI_VISION_MODEL", "gpt-4o"),
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": content_blocks}],
             temperature=0,
+            seed=42,
         )
         self.analysis_dict = extract_json_from_response(response.choices[0].message.content)
 
@@ -103,9 +122,14 @@ class Invoice:
         if self.file_type != "pdf":
             raise ValueError("split_document_into_invoices currently expects a PDF input.")
 
+        # Map LLM invoice keys (may be invoice numbers like "73980/25-024544BP")
+        # to sequential document numbers and preserve the mapping for invoice_animals lookup
+        self._invoice_key_to_doc_number = {}
+
         with fitz.open(self.local_input_path) as doc:
-            for doc_num_str, page_numbers in self.analysis_dict["invoice_pages"].items():
-                document_number = int(doc_num_str) if isinstance(doc_num_str, str) and doc_num_str.isdigit() else int(doc_num_str)
+            for seq_idx, (invoice_key, page_numbers) in enumerate(self.analysis_dict["invoice_pages"].items(), start=1):
+                document_number = seq_idx
+                self._invoice_key_to_doc_number[invoice_key] = document_number
 
                 sub_md = "\n\n".join([self.markdown_by_page[p] for p in page_numbers])
 
@@ -119,7 +143,8 @@ class Invoice:
                 # 2) create sub-pdf locally, then upload/store
                 subdoc_pdf_local = self.work_dir / Path(pdf_key).name
                 subdoc = fitz.open()
-                subdoc.insert_pdf(doc, from_page=page_numbers[0] - 1, to_page=page_numbers[-1] - 1)
+                for page_num in page_numbers:
+                    subdoc.insert_pdf(doc, from_page=page_num - 1, to_page=page_num - 1)
                 subdoc.save(subdoc_pdf_local)
                 subdoc.close()
 
@@ -129,7 +154,7 @@ class Invoice:
                 page_images: list[Image.Image] = []
                 with fitz.open(subdoc_pdf_local) as subpdf:
                     for page in subpdf:
-                        pix = page.get_pixmap(dpi=300)
+                        pix = page.get_pixmap(dpi=200)
                         mode = "RGB" if pix.alpha == 0 else "RGBA"
                         pil_image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
                         page_images.append(pil_image)
@@ -158,29 +183,55 @@ class Invoice:
                     )
                 )
 
+    def _extract_single_subdocument(self, subdoc, processor):
+        """Extract data from a single subdocument. Thread-safe."""
+        local_image = self.storage.materialize_to_local(subdoc.image_key)
+        self.storage.materialize_to_local(subdoc.pdf_key)
+
+        ocr_text = subdoc.markdown
+
+        # Use per-invoice animals if available, fall back to global list
+        invoice_animals = self.analysis_dict.get("invoice_animals", {})
+        animal_info = None
+        if invoice_animals:
+            doc_num_to_key = {v: k for k, v in getattr(self, '_invoice_key_to_doc_number', {}).items()}
+            invoice_key = doc_num_to_key.get(subdoc.document_number)
+            if invoice_key and invoice_key in invoice_animals:
+                animal_info = invoice_animals[invoice_key]
+            elif str(subdoc.document_number) in invoice_animals:
+                animal_info = invoice_animals[str(subdoc.document_number)]
+        if animal_info is None:
+            animal_info = self.analysis_dict.get("animals")
+
+        return processor.extract(
+            str(local_image),
+            use_ocr=True,
+            use_vision=True,
+            markdown_text=subdoc.markdown,
+            prompt=get_full_prompt(
+                ocr_text=ocr_text,
+                animal_information=animal_info,
+            ),
+            animal_information=animal_info,
+        )
+
     def extract_data_from_subdocuments(self, processor):
-        extraction_dicts = []
+        from concurrent.futures import ThreadPoolExecutor
+
         extraction_result_json = {"number_of_subdocuments": len(self.subdocuments)}
 
-        for subdoc in self.subdocuments:
-            # processor.extract expects a local filename -> materialize image to local
-            local_image = self.storage.materialize_to_local(subdoc.image_key)
-            local_pdf = self.storage.materialize_to_local(subdoc.pdf_key)
-
-            ocr_text = subdoc.markdown #self.ocr_engine.extract_text(local_pdf)
-
-            extraction_dict = processor.extract(
-                str(local_image),
-                use_ocr=True,
-                use_vision=True,
-                markdown_text=subdoc.markdown,
-                prompt=get_full_prompt(
-                    ocr_text=ocr_text,
-                    animal_information=self.analysis_dict.get("animals"),
-                ),
-                animal_information=self.analysis_dict.get("animals"),
-            )
-            extraction_dicts.append(extraction_dict)
+        if len(self.subdocuments) <= 1:
+            extraction_dicts = [
+                self._extract_single_subdocument(sd, processor)
+                for sd in self.subdocuments
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=len(self.subdocuments)) as pool:
+                futures = [
+                    pool.submit(self._extract_single_subdocument, sd, processor)
+                    for sd in self.subdocuments
+                ]
+                extraction_dicts = [f.result() for f in futures]
 
         extraction_result_json["subdocuments"] = extraction_dicts
         self.extraction_result_json = extraction_result_json

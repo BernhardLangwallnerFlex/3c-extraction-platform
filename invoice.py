@@ -107,7 +107,7 @@ class Invoice:
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )
         response = client.chat.completions.create(
-            model=os.getenv("OPENAI_VISION_MODEL", "gpt-4o"),
+            model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
             messages=[{"role": "user", "content": content_blocks}],
             temperature=0,
             seed=42,

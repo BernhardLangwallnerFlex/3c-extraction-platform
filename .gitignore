@@ -93,6 +93,7 @@ Thumbs.db
 # Model outputs
 results/
 outputs/
+test/
 *.md
 !README.md
 
@@ -102,3 +103,5 @@ outputs/
 .cache/
 
 env_aws
+api_key_prod.txt
+azure_deployment_plan.md

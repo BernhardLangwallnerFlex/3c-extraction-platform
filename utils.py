@@ -20,11 +20,56 @@ def ensure_json_serializable(obj):
 
 # Extract the JSON content from the response
 def extract_json_from_response(text):
-    # Remove Markdown code block if present
-    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE)
+    # Try 1: direct parse (already clean JSON)
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
 
-    # Parse as JSON
-    return json.loads(cleaned)
+    # Try 2: extract from markdown code fence
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL | re.IGNORECASE)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # Try 3: find the first { ... } or [ ... ] block via bracket matching
+    for opener, closer in [('{', '}'), ('[', ']')]:
+        start = text.find(opener)
+        if start == -1:
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            c = text[i]
+            if escape:
+                escape = False
+                continue
+            if c == '\\' and in_string:
+                escape = True
+                continue
+            if c == '"' and not escape:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == opener:
+                depth += 1
+            elif c == closer:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError:
+                        break
+        break
+
+    raise ValueError(
+        f"Could not extract valid JSON from model response. First 200 chars: {text[:200]}"
+    )
 
 def encode_image_to_base64(image_path):
     """

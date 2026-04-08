@@ -262,18 +262,28 @@ class Invoice:
 
         ocr_text = subdoc.markdown
 
+        # Resolve the original invoice key for this subdocument
+        doc_num_to_key = {v: k for k, v in getattr(self, '_invoice_key_to_doc_number', {}).items()}
+        invoice_key = doc_num_to_key.get(subdoc.document_number)
+
         # Use per-invoice animals if available, fall back to global list
         invoice_animals = self.analysis_dict.get("invoice_animals", {})
         animal_info = None
         if invoice_animals:
-            doc_num_to_key = {v: k for k, v in getattr(self, '_invoice_key_to_doc_number', {}).items()}
-            invoice_key = doc_num_to_key.get(subdoc.document_number)
             if invoice_key and invoice_key in invoice_animals:
                 animal_info = invoice_animals[invoice_key]
             elif str(subdoc.document_number) in invoice_animals:
                 animal_info = invoice_animals[str(subdoc.document_number)]
         if animal_info is None:
             animal_info = self.analysis_dict.get("animals")
+
+        # Look up expected item count from analysis step
+        item_counts = self.analysis_dict.get("invoice_number_of_items", {})
+        expected_items = None
+        if invoice_key and invoice_key in item_counts:
+            expected_items = item_counts[invoice_key]
+        elif str(subdoc.document_number) in item_counts:
+            expected_items = item_counts[str(subdoc.document_number)]
 
         return processor.extract(
             str(local_image),
@@ -283,6 +293,7 @@ class Invoice:
             prompt=get_full_prompt(
                 ocr_text=ocr_text,
                 animal_information=animal_info,
+                expected_items=expected_items,
             ),
             animal_information=animal_info,
         )

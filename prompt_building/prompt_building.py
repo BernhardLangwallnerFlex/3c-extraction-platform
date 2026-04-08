@@ -62,15 +62,20 @@ def build_prompt_from_config(config_path="configs/extraction_config.json", use_o
 
 
 
-def get_full_prompt(ocr_text="", animal_information={}):
+def get_full_prompt(ocr_text="", animal_information={}, expected_items=None):
     if animal_information:
-        animals_section = "\n".join([f"{animal['name']} (Tierart: {animal['species']}, Rasse: {animal['breed']})" 
+        animals_section = "\n".join([f"{animal['name']} (Tierart: {animal['species']}, Rasse: {animal['breed']})"
                                     if animal['breed'] != ""
-                                    else f"{animal['name']} (Tierart: {animal['species']})" 
+                                    else f"{animal['name']} (Tierart: {animal['species']})"
                                     for animal in animal_information])
         animals_section = f"Die folgenden Tiere werden in der Rechnung oder Quittung erwähnt: {animals_section}. Diese Information ist wichtig für die Extrahierung der Leistungen auf der Rechnung oder Quittung."
     else:
         animals_section = ""
+
+    if expected_items and expected_items > 0:
+        items_hint = f"WICHTIG: Diese Rechnung enthält voraussichtlich etwa {expected_items} Leistungen/Positionen. Stelle sicher, dass du ALLE Zeilen extrahierst, auch wenn sich Leistungen (z.B. Folgeuntersuchung, Materialpauschale) über mehrere Behandlungstage wiederholen. Jede Zeile der Tabelle ist ein eigener Eintrag."
+    else:
+        items_hint = ""
         
     return f"""
             Du bist ein Experte für die Analyse von Tierarzt- und Tierphysiotherapie-Rechnungen.
@@ -78,6 +83,7 @@ def get_full_prompt(ocr_text="", animal_information={}):
             und sie ausschließlich als gültiges JSON-Objekt im definierten Schema zurückzugeben.
             Erfinde keine Werte. Wenn ein Feld nicht sicher ermittelt werden kann, gib null zurück und erkläre Unsicherheiten im Feld 'warnings'.
             {animals_section}
+            {items_hint}
             Die Rechnung ist sowohl als Bild (visuelle Referenz) als auch als OCR-Text verfügbar.
             Der OCR-Text ist zwischen Doppel-Pipes (||) angegeben.
             OCR-Ergebnisse können fehlerhaft sein – überprüfe und korrigiere sie ggf. mit dem Bild.

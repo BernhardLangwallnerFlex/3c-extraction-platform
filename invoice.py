@@ -5,14 +5,18 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 import json
+import logging
 import tempfile
 import fitz
 from PIL import Image
+import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 import shutil
 from ocr.base_ocr import BaseOCREngine
 from utils import extract_json_from_response, strip_ocr_element_ids
+
+log = logging.getLogger(__name__)
 from prompt_building.prompt_building import build_prompt_for_analyze_document, get_full_prompt
 
 from storage.storage import StorageBackend, LocalStorage, StorageKey
@@ -61,6 +65,9 @@ class Invoice:
 
         self.file_type = "pdf" if self.local_input_path.suffix.lower() == ".pdf" else "image"
 
+        # Fix page orientation before any OCR or image rendering
+        self._fix_page_orientation()
+
         if self.file_type == "pdf":
             with fitz.open(self.local_input_path) as doc:
                 self.page_number = len(doc)
@@ -69,6 +76,71 @@ class Invoice:
 
         # A nice stable stem for output naming
         self.stem = self.local_input_path.stem
+
+    def _fix_page_orientation(self):
+        """Detect and correct rotated pages using Tesseract OSD.
+
+        Overwrites self.local_input_path with a corrected version if any
+        pages need rotation. Handles both PDFs (per-page) and images.
+        """
+        if self.file_type == "pdf":
+            self._fix_pdf_orientation()
+        else:
+            self._fix_image_orientation()
+
+    def _fix_pdf_orientation(self):
+        """Check each page of a PDF for rotation and correct in-place."""
+        needs_fix = False
+        rotations = {}
+
+        with fitz.open(self.local_input_path) as doc:
+            for i, page in enumerate(doc):
+                pix = page.get_pixmap(dpi=150)
+                mode = "RGB" if pix.alpha == 0 else "RGBA"
+                img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
+                rotation = self._detect_rotation(img)
+                if rotation != 0:
+                    needs_fix = True
+                    rotations[i] = rotation
+                    log.info("page_rotation_detected page=%d rotation=%d", i + 1, rotation)
+
+        if not needs_fix:
+            return
+
+        # Re-open and apply rotations
+        doc = fitz.open(self.local_input_path)
+        for page_idx, rotation in rotations.items():
+            page = doc[page_idx]
+            page.set_rotation((page.rotation + rotation) % 360)
+        corrected_path = self.work_dir / f"corrected_{self.local_input_path.name}"
+        doc.save(str(corrected_path))
+        doc.close()
+        self.local_input_path = corrected_path
+
+    def _fix_image_orientation(self):
+        """Check a single image for rotation and correct in-place."""
+        img = Image.open(self.local_input_path)
+        rotation = self._detect_rotation(img)
+        if rotation != 0:
+            log.info("image_rotation_detected rotation=%d", rotation)
+            # PIL rotate is counter-clockwise, Tesseract reports clockwise correction needed
+            corrected = img.rotate(rotation, expand=True)
+            corrected_path = self.work_dir / f"corrected_{self.local_input_path.name}"
+            corrected.save(str(corrected_path))
+            self.local_input_path = corrected_path
+
+    @staticmethod
+    def _detect_rotation(img: Image.Image) -> int:
+        """Use Tesseract OSD to detect rotation angle. Returns 0, 90, 180, or 270."""
+        try:
+            osd = pytesseract.image_to_osd(img)
+            for line in osd.split("\n"):
+                if "Rotate:" in line:
+                    return int(line.split(":")[1].strip())
+        except Exception:
+            # OSD fails on pages with too little text — assume no rotation
+            pass
+        return 0
 
     def extract_markdown(self):
         markdown, markdown_by_page = self.ocr_engine.extract_text(self)

@@ -73,7 +73,7 @@ def get_full_prompt(ocr_text="", animal_information={}, expected_items=None):
         animals_section = ""
 
     if expected_items and expected_items > 0:
-        items_hint = f"WICHTIG: Diese Rechnung enthält voraussichtlich etwa {expected_items} Leistungen/Positionen. Stelle sicher, dass du ALLE Zeilen extrahierst, auch wenn sich Leistungen (z.B. Folgeuntersuchung, Materialpauschale) über mehrere Behandlungstage wiederholen. Jede Zeile der Tabelle ist ein eigener Eintrag."
+        items_hint = f"WICHTIG: Diese Rechnung enthält voraussichtlich etwa {expected_items} Leistungen/Positionen. Wenn du weniger als {expected_items} Positionen findest, überprüfe nochmals den OCR-Text und das Bild — wahrscheinlich hast du Zeilen übersehen."
     else:
         items_hint = ""
         
@@ -109,7 +109,7 @@ def get_full_prompt(ocr_text="", animal_information={}, expected_items=None):
             12. Totals: normalisiere alle Zahlenwerte (Punkt als Dezimaltrennzeichen); Hauptsteuersatz verwenden.
             13. Validierung: totals.net + totals.tax.amount ≈ totals.gross (Toleranz ±0.02).
             14. IBAN (DE) = 22 Zeichen; BIC = 8 oder 11 Zeichen, upper-case.
-            15. Die Leistungen ("items" unten) sollen in der Reihenfolge der Rechnung oder Quittung extrahiert werden. Meistens sind die Leistungen in Tabellenform angegeben. Achte daher besonders darauf alle Zeilen innerhalb von Tabellen genau zu analysieren und zu extrahieren.
+            15. Die Leistungen ("items" unten) sollen in der Reihenfolge der Rechnung oder Quittung extrahiert werden. Meistens sind die Leistungen in Tabellenform angegeben. Achte daher besonders darauf ALLE Zeilen innerhalb von Tabellen genau zu analysieren und zu extrahieren. WICHTIG: Wenn eine Rechnung mehrere Behandlungstage enthält, wird dieselbe Leistung (z.B. "Folgeuntersuchung", "Kaltplasmabehandlung", "Materialpauschale") an jedem Tag separat aufgeführt. Jede Zeile ist ein eigener Eintrag — NICHT zusammenfassen oder deduplizieren.
             16. Die sogenannten GOT-Codes ("got" unten) sind ein- bis vierstellige Zahlen, oft in Klammern dargestellt. Falls in dem Format 'GOT 1234' angegeben, dann nur die Ziffern zurückgeben.
 
             JSON-Ziel-Schema:

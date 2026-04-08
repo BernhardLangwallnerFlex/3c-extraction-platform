@@ -36,7 +36,7 @@ pymupdf==1.26.6
 pillow==10.4.0
 
 # --- OCR (Dual: Mistral + Azure Doc Intelligence) ---
-mistralai>=1.9.0
+mistralai==1.9.11
 azure-ai-documentintelligence
 
 # --- OCR (LandingAI — legacy, kept for fallback) ---

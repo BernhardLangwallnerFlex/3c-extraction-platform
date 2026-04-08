@@ -77,103 +77,96 @@ def get_full_prompt(ocr_text="", animal_information={}, expected_items=None):
     else:
         items_hint = ""
         
-    return f"""
-            Du bist ein Experte für die Analyse von Tierarzt- und Tierphysiotherapie-Rechnungen.
-            Deine Aufgabe ist es, aus der untenstehenden Rechnung strukturierte Informationen zu extrahieren
-            und sie ausschließlich als gültiges JSON-Objekt im definierten Schema zurückzugeben.
-            Erfinde keine Werte. Wenn ein Feld nicht sicher ermittelt werden kann, gib null zurück und erkläre Unsicherheiten im Feld 'warnings'.
-            {animals_section}
-            {items_hint}
-            Die Rechnung ist sowohl als Bild (visuelle Referenz) als auch als OCR-Text verfügbar.
-            Der OCR-Text ist zwischen Doppel-Pipes (||) angegeben.
-            OCR-Ergebnisse können fehlerhaft sein – überprüfe und korrigiere sie ggf. mit dem Bild.
-
-            OCR-Text:
-            ||
-            {ocr_text}
-            ||
-
-            Regeln für die Extraktion:
-            1. Keine Halluzinationen: Nur Werte extrahieren, die im OCR- oder Bildinhalt sichtbar oder eindeutig ableitbar sind.
-            2. Wenn ein Feld fehlt oder nicht eindeutig ist → null.
-            3. Strings: ohne führende/trailing Leerzeichen.
-            4. Geldbeträge: nur Ziffern und Punkt, z. B. 36.31.
-            5. Datumsformat: YYYY-MM-DD.
-            6. Währung: ISO-4217-Code (z. B. "EUR").
-            7. Zeilen mit Summe, Endsumme, USt, MwSt, Gesamt, Saldo, Offen, Netto, Brutto → nicht als items übernehmen.
-            8. Eine Zeile mit klar erkennbarer Leistung oder Medikament → ein items-Eintrag.
-            9. Mengen und Einheiten extrahieren, wenn eindeutig (z. B. 10 Tabletten, 1 Flasche).
-            Wenn nicht vorhanden → qty=null, unit=null.
-            10. GOT-Nummern: trenne in code, multiplier, raw; wenn keine gefunden → alle null.
-            11. Quellreferenzen: gib OCR-IDs (z. B. 3-4, 3-5) in source.ids an und kurze Textausschnitte in source.snippet.
-            12. Totals: normalisiere alle Zahlenwerte (Punkt als Dezimaltrennzeichen); Hauptsteuersatz verwenden.
-            13. Validierung: totals.net + totals.tax.amount ≈ totals.gross (Toleranz ±0.02).
-            14. IBAN (DE) = 22 Zeichen; BIC = 8 oder 11 Zeichen, upper-case.
-            15. Die Leistungen ("items" unten) sollen in der Reihenfolge der Rechnung oder Quittung extrahiert werden. Meistens sind die Leistungen in Tabellenform angegeben. Achte daher besonders darauf ALLE Zeilen innerhalb von Tabellen genau zu analysieren und zu extrahieren. WICHTIG: Wenn eine Rechnung mehrere Behandlungstage enthält, wird dieselbe Leistung (z.B. "Folgeuntersuchung", "Kaltplasmabehandlung", "Materialpauschale") an jedem Tag separat aufgeführt. Jede Zeile ist ein eigener Eintrag — NICHT zusammenfassen oder deduplizieren.
-            16. Die sogenannten GOT-Codes ("got" unten) sind ein- bis vierstellige Zahlen, oft in Klammern dargestellt. Falls in dem Format 'GOT 1234' angegeben, dann nur die Ziffern zurückgeben.
-
-            JSON-Ziel-Schema:
-            {{
-            "type": "invoice|receipt|null",
-            "currency": "EUR|null",
-            "number": "string|null",
-            "issuedAt": "YYYY-MM-DD|null",
-            "serviceDates": ["YYYY-MM-DD", "..."],
-            "sender": {{
-                "practiceName": "string|null",
-                "address": "string|null",
-                "postcode": "string|null",
-                "city": "string|null",
-                "country": "string|null",
-                "contactPhone": "string|null",
-                "contactMail": "string|null",
-                "vatId": "string|null"
-            }},
-            "clinicians": [
-                {{ "name": "string|null", "title": "string|null" }}
-            ],
-            "payment": {{
-                "iban": "string|null",
-                "bic": "string|null",
-                "bankName": "string|null",
-                "dueDate": "YYYY-MM-DD|null"
-            }},
-            "recipient": {{
-                "companyName": "string|null",
-                "contactFirstname": "string|null",
-                "contactName": "string|null",
-                "street": "string|null",
-                "postcode": "string|null",
-                "city": "string|null",
-                "country": "string|null",
-                "contactPhone": "string|null",
-                "contactMail": "string|null"
-            }},
-            "animals": [
-                {{ "name": "string|null", "species": "string|null", "breed": "string|null" }}
-            ],
-            "items": [
-                {{
-                "name": "string|null",
-                "got": {{ "code": "string|null", "multiplier": 1.0, "raw": "string|null" }},
-                "animal": {{ "name": "string|null", "species": "string|null" }},
-                "qty": 1.0,
-                "unit": "string|null",
-                "unitPriceNet": 0.00,
-                "lineTotalNet": 0.00,
-                "serviceDate": "YYYY-MM-DD|null",
-                "source": {{ "ids": ["string"], "snippet": "string" }}
-                }}
-            ],
-            "totals": {{
-                "net": 0.00,
-                "tax": {{ "rate": 19.0, "amount": 0.00 }},
-                "gross": 0.00,
-                "discount": 0.00
-            }},
-            "warnings": ["string"]
-            }}
-
-            Nur das vollständige JSON-Objekt ausgeben, ohne Erklärung oder Markdown.
-            Wenn du unsicher bist, gib den wahrscheinlichsten Wert und eine kurze Begründung in warnings.
-            """
+    return (
+"Du bist ein Experte für die Analyse von Tierarzt- und Tierphysiotherapie-Rechnungen.\n"
+"Deine Aufgabe ist es, aus der untenstehenden Rechnung strukturierte Informationen zu extrahieren "
+"und sie ausschließlich als gültiges JSON-Objekt im definierten Schema zurückzugeben.\n"
+"Erfinde keine Werte. Wenn ein Feld nicht sicher ermittelt werden kann, gib null zurück und erkläre Unsicherheiten im Feld 'warnings'.\n"
+f"{animals_section}\n"
+f"{items_hint}\n"
+"Die Rechnung ist als Bild (visuelle Referenz) sowie als OCR-Text aus zwei unabhängigen OCR-Systemen verfügbar. "
+"Der OCR-Text ist zwischen Doppel-Pipes (||) angegeben und enthält zwei mit 'OCR Source A' und 'OCR Source B' gekennzeichnete Abschnitte. "
+"Nutze beide OCR-Quellen, um Fehler zu erkennen und zu korrigieren. Bei Widersprüchen zwischen den OCR-Quellen überprüfe mit dem Bild.\n\n"
+"OCR-Text:\n"
+f"||\n{ocr_text}\n||\n\n"
+"Regeln für die Extraktion:\n"
+"1. Keine Halluzinationen: Nur Werte extrahieren, die im OCR- oder Bildinhalt sichtbar oder eindeutig ableitbar sind.\n"
+"2. Wenn ein Feld fehlt oder nicht eindeutig ist → null.\n"
+"3. Strings: ohne führende/trailing Leerzeichen.\n"
+"4. Geldbeträge: nur Ziffern und Punkt, z. B. 36.31.\n"
+"5. Datumsformat: YYYY-MM-DD.\n"
+"6. Währung: ISO-4217-Code (z. B. \"EUR\").\n"
+"7. Zeilen mit Summe, Endsumme, USt, MwSt, Gesamt, Saldo, Offen, Netto, Brutto → nicht als items übernehmen.\n"
+"8. Eine Zeile mit klar erkennbarer Leistung oder Medikament → ein items-Eintrag.\n"
+"9. Mengen und Einheiten extrahieren, wenn eindeutig (z. B. 10 Tabletten, 1 Flasche). Wenn nicht vorhanden → qty=null, unit=null.\n"
+"10. GOT-Nummern: trenne in code, multiplier, raw; wenn keine gefunden → alle null.\n"
+"11. Quellreferenzen: gib kurze Textausschnitte der extrahierten Zeile in source.snippet an.\n"
+"12. Totals: normalisiere alle Zahlenwerte (Punkt als Dezimaltrennzeichen). Steuersatz und Steuerbetrag NUR extrahieren wenn explizit auf dem Dokument angegeben. Wenn kein Steuersatz/Steuerbetrag sichtbar ist → tax.rate=null, tax.amount=null.\n"
+"13. Validierung: wenn totals.net, totals.tax.amount und totals.gross alle vorhanden sind, prüfe totals.net + totals.tax.amount ≈ totals.gross (Toleranz ±0.02).\n"
+"14. IBAN (DE) = 22 Zeichen; BIC = 8 oder 11 Zeichen, upper-case.\n"
+"15. Die Leistungen (\"items\" unten) sollen in der Reihenfolge der Rechnung oder Quittung extrahiert werden. Meistens sind die Leistungen in Tabellenform angegeben. Achte daher besonders darauf ALLE Zeilen innerhalb von Tabellen genau zu analysieren und zu extrahieren. WICHTIG: Wenn eine Rechnung mehrere Behandlungstage enthält, wird dieselbe Leistung (z.B. \"Folgeuntersuchung\", \"Kaltplasmabehandlung\", \"Materialpauschale\") an jedem Tag separat aufgeführt. Jede Zeile ist ein eigener Eintrag — NICHT zusammenfassen oder deduplizieren.\n"
+"16. Die sogenannten GOT-Codes (\"got\" unten) sind ein- bis vierstellige Zahlen, oft in Klammern dargestellt. Falls in dem Format 'GOT 1234' angegeben, dann nur die Ziffern zurückgeben.\n\n"
+"JSON-Ziel-Schema:\n"
+"{{\n"
+"\"type\": \"invoice|receipt|prescription|null\",\n"
+"\"currency\": \"EUR|null\",\n"
+"\"number\": \"string|null\",\n"
+"\"issuedAt\": \"YYYY-MM-DD|null\",\n"
+"\"serviceDates\": [\"YYYY-MM-DD\", \"...\"],\n"
+"\"sender\": {{\n"
+"  \"practiceName\": \"string|null\",\n"
+"  \"address\": \"string|null\",\n"
+"  \"postcode\": \"string|null\",\n"
+"  \"city\": \"string|null\",\n"
+"  \"country\": \"string|null\",\n"
+"  \"contactPhone\": \"string|null\",\n"
+"  \"contactMail\": \"string|null\",\n"
+"  \"vatId\": \"string|null\"\n"
+"}},\n"
+"\"clinicians\": [\n"
+"  {{ \"name\": \"string|null\", \"title\": \"string|null\" }}\n"
+"],\n"
+"\"payment\": {{\n"
+"  \"iban\": \"string|null\",\n"
+"  \"bic\": \"string|null\",\n"
+"  \"bankName\": \"string|null\",\n"
+"  \"dueDate\": \"YYYY-MM-DD|null\"\n"
+"}},\n"
+"\"recipient\": {{\n"
+"  \"companyName\": \"string|null\",\n"
+"  \"contactFirstname\": \"string|null\",\n"
+"  \"contactName\": \"string|null\",\n"
+"  \"street\": \"string|null\",\n"
+"  \"postcode\": \"string|null\",\n"
+"  \"city\": \"string|null\",\n"
+"  \"country\": \"string|null\",\n"
+"  \"contactPhone\": \"string|null\",\n"
+"  \"contactMail\": \"string|null\"\n"
+"}},\n"
+"\"animals\": [\n"
+"  {{ \"name\": \"string|null\", \"species\": \"string|null\", \"breed\": \"string|null\" }}\n"
+"],\n"
+"\"items\": [\n"
+"  {{\n"
+"    \"name\": \"string|null\",\n"
+"    \"got\": {{ \"code\": \"string|null\", \"multiplier\": \"number|null\", \"raw\": \"string|null\" }},\n"
+"    \"animal\": {{ \"name\": \"string|null\", \"species\": \"string|null\" }},\n"
+"    \"qty\": \"number|null\",\n"
+"    \"unit\": \"string|null\",\n"
+"    \"unitPriceNet\": \"number|null\",\n"
+"    \"lineTotalNet\": \"number|null\",\n"
+"    \"serviceDate\": \"YYYY-MM-DD|null\",\n"
+"    \"source\": {{ \"snippet\": \"string\" }}\n"
+"  }}\n"
+"],\n"
+"\"totals\": {{\n"
+"  \"net\": \"number|null\",\n"
+"  \"tax\": {{ \"rate\": \"number|null\", \"amount\": \"number|null\" }},\n"
+"  \"gross\": \"number|null\",\n"
+"  \"discount\": \"number|null\"\n"
+"}},\n"
+"\"warnings\": [\"string\"]\n"
+"}}\n\n"
+"Nur das vollständige JSON-Objekt ausgeben, ohne Erklärung oder Markdown.\n"
+"Wenn du unsicher bist, gib den wahrscheinlichsten Wert und eine kurze Begründung in warnings."
+    )

@@ -77,8 +77,8 @@ def process_file(file_id: str):
         processor = AzureInvoiceProcessor(
             name="azure_processor",
             api_key=os.getenv("AZURE_OPENAI_KEY"),
-            model=os.getenv("OPENAI_TEXT_MODEL", "gpt-5.4-mini"),
-            vision_model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+            model=os.getenv("OPENAI_TEXT_MODEL", "gpt-5.4"),
+            vision_model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4"),
             azure_endpoint=os.getenv("AZURE_ENDPOINT"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )

@@ -35,9 +35,16 @@ jiter==0.12.0
 pymupdf==1.26.6
 pillow==10.4.0
 
-# --- OCR (LandingAI) ---
+# --- OCR (Dual: Mistral + Azure Doc Intelligence) ---
+mistralai
+azure-ai-documentintelligence
+
+# --- OCR (LandingAI — legacy, kept for fallback) ---
 landingai==0.3.49
 landingai-ade==0.21.2
+
+# --- OCR orientation detection ---
+pytesseract
 
 # --- Azure Blob Storage ---
 azure-storage-blob==12.27.0

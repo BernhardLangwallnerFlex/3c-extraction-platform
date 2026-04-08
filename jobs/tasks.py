@@ -9,7 +9,7 @@ from storage.file_storage import get_file_key
 from storage.storage import LocalStorage, S3Storage, AzureBlobStorage
 from invoice import Invoice
 
-from ocr.ocr_agentic import OCRAgenticProcessor
+from ocr.ocr_dual import DualOCRProcessor
 from processors.azure_processor import AzureInvoiceProcessor
 from utils import ensure_json_serializable
 
@@ -72,7 +72,7 @@ def process_file(file_id: str):
         file_key = get_file_key(file_id)
         storage = _build_storage()
 
-        agentic_ocr_engine = OCRAgenticProcessor(name="agentic_ocr")
+        dual_ocr_engine = DualOCRProcessor(name="dual_ocr")
 
         processor = AzureInvoiceProcessor(
             name="azure_processor",
@@ -94,7 +94,7 @@ def process_file(file_id: str):
 
         invoice = Invoice(
             file_key=file_key,
-            ocr_engine=agentic_ocr_engine,
+            ocr_engine=dual_ocr_engine,
             storage=storage,
             output_prefix=output_prefix,
         )

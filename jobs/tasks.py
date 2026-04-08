@@ -107,7 +107,10 @@ def process_file(file_id: str):
         t = time.monotonic()
         invoice.analyze_document()
         subdoc_count = len(invoice.analysis_dict.get("invoice_pages", {}))
-        log.info("analysis_completed", file_id=file_id, duration_s=round(time.monotonic() - t, 2), subdocuments=subdoc_count)
+        log.info("analysis_completed", file_id=file_id, duration_s=round(time.monotonic() - t, 2),
+                 subdocuments=subdoc_count,
+                 invoice_number_of_items=invoice.analysis_dict.get("invoice_number_of_items"),
+                 ocr_chars=len(invoice.markdown))
 
         t = time.monotonic()
         invoice.split_document_into_invoices()

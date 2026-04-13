@@ -96,12 +96,22 @@ outputs/
 test/
 *.md
 !README.md
+!CLAUDE.md
+!TODO.md
+!azure_deployment_plan.md
+!costing.md
+!performance_todos.md
+!vetcostcheck_api_doc.md
 
 # Temporary files
 *.tmp
 *.bak
 .cache/
+temp_*/
+
+# Benchmarks & notebooks (local only)
+benchmarks/
+notebooks/
 
 env_aws
 api_key_prod.txt
-azure_deployment_plan.md

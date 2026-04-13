@@ -1,0 +1,85 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What This Project Does
+
+Veterinary invoice data extraction pipeline for 3C. Accepts PDF invoices (often multi-invoice PDFs), splits them into sub-documents, performs OCR, then uses LLM vision+text to extract structured JSON (line items, totals, sender/recipient, animals, GOT codes, etc.). Domain language is German.
+
+## Commands
+
+```bash
+# Run the API server locally
+uvicorn api.main:app --host 0.0.0.0 --port 8000 --log-level debug
+
+# Run the RQ worker (requires Redis)
+python jobs/worker.py
+
+# Quick local test against the API
+python test_api.py
+
+# Ad-hoc processing script (edit main.py to set file paths)
+python main.py
+
+# Deploy to Azure Container Apps (builds in ACR + updates both apps)
+./deploy.sh [tag]
+```
+
+There is no test suite or linter configured. Python 3.11+ (Dockerfile uses 3.11-slim).
+
+## Architecture
+
+### Processing Pipeline
+
+The core flow is: **Upload PDF -> OCR -> Analyze/Split -> Extract per sub-document -> JSON output**
+
+1. **`invoice.py` — `Invoice` class**: Orchestrates the entire pipeline for one input file. Key methods run in sequence:
+   - `extract_markdown()` — OCR via pluggable engine, produces per-page markdown
+   - `analyze_document()` — LLM call (OpenAI) to identify which pages belong to which sub-invoice and detect animal info
+   - `split_document_into_invoices()` — splits PDF by page ranges from analysis, creates sub-PDFs + concatenated images + markdown, uploads all artifacts to storage
+   - `extract_data_from_subdocuments(processor)` — runs LLM extraction on each subdocument via a processor, stores final JSON
+
+2. **`jobs/tasks.py` — `process_file(file_id)`**: Production entry point. Wires up storage, OCR engine, and processor from env vars, then runs the Invoice pipeline. Called by the RQ worker.
+
+### API Layer (`api/`)
+
+FastAPI app with API key auth (`X-Api-Key` header, checked against `INVOICE_API_KEY` env var).
+
+- `POST /upload` — saves file to storage, returns `file_id`
+- `POST /process` — enqueues `process_file` on RQ, returns `job_id`
+- `GET /job/{job_id}` — polls job status/result from Redis
+- `GET /healthz` — health check (no auth)
+
+### Storage (`storage/`)
+
+`StorageBackend` protocol with three implementations: `LocalStorage`, `S3Storage` (`s3://` URIs), `AzureBlobStorage` (`az://` URIs). Selected by `STORAGE_BACKEND` env var (`local`/`s3`/`azure`). All file I/O goes through this abstraction.
+
+`storage/file_storage.py` handles upload persistence and file_id -> storage key resolution.
+
+### OCR Engines (`ocr/`)
+
+All inherit from `BaseOCREngine`. Production engine is `DualOCRProcessor` (`ocr/ocr_dual.py`) which runs Mistral OCR and Azure Document Intelligence in parallel, merging their outputs per page. Others exist for experimentation (Tesseract, LandingAI, Google Vision, Docling).
+
+### LLM Processors (`processors/`)
+
+Production uses `AzureInvoiceProcessor` (Azure OpenAI). `GPTInvoiceProcessor` (direct OpenAI) also exists. Both send vision+text prompts and parse JSON responses. The extraction prompt and schema are defined in `prompt_building/prompt_building.py` and `configs/extraction_config.json`.
+
+### Prompt Building (`prompt_building/`)
+
+`build_prompt_for_analyze_document()` — analysis/splitting prompt (from config template).
+`get_full_prompt()` — hardcoded German extraction prompt with full JSON schema.
+`build_prompt_from_config()` — config-driven extraction prompt.
+
+## Key Environment Variables
+
+- `STORAGE_BACKEND` — `local`, `s3`, or `azure`
+- `OPENAI_API_KEY` — for GPT processor and document analysis
+- `VISION_AGENT_API_KEY` — for LandingAI OCR
+- `AZURE_ENDPOINT`, `AZURE_OPENAI_KEY`, `AZURE_OPENAI_API_VERSION` — for Azure OpenAI processor
+- `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY` — for Azure blob storage
+- `REDIS_URL` — Redis connection for RQ job queue
+ `INVOICE_API_KEY` — API authentication
+- `RQ_QUEUE_NAME` — defaults to `invoice-jobs`
+
+## Deployment
+Deployed on Azure Container Apps (API + worker) with Azure Cache for Redis, Azure Blob Storage, and Azure OpenAI. See `azure_deployment_plan.md` for full infrastructure details and `deploy.sh` for the deployment script. The Dockerfile sets `PYTHONPATH=/app`.

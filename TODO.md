@@ -14,7 +14,7 @@
 - [ ] **Reuse AzureOpenAI client in analyze_document()** (low): `invoice.py:176-180` creates a new client every call. Create once in `__init__()`.
 
 ## Cleanup
-- [ ] **Remove LandingAI dependency**: Once dual OCR is validated in production, remove `landingai`/`landingai-ade` from requirements and `VISION_AGENT_API_KEY` from env vars.
+- [x] **Remove LandingAI dependency**: Removed `landingai`/`landingai-ade` from requirements. OCR processor code kept for reference.
 - [ ] **Fix cleanup inconsistency**: `cleanup_temporary_files()` deletes storage artifacts but only `cleanup_local()` (local temp files) is called in production (`tasks.py:128`).
 - [ ] **Add caching / deduplication**: Reprocessing the same file reruns the full pipeline with no intermediate result caching.
 

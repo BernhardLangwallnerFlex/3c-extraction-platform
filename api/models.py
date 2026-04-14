@@ -95,6 +95,7 @@ class SubdocumentModel(BaseModel):
     payment: PaymentModel | None = None
     recipient: RecipientModel | None = None
     animals: list[AnimalModel] | None = None
+    diagnoses: list[str] | None = None
     items: list[LineItemModel] | None = None
     totals: TotalsModel | None = None
     warnings: list[str] | None = None

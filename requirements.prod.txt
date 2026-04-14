@@ -39,10 +39,6 @@ pillow==10.4.0
 mistralai==1.9.11
 azure-ai-documentintelligence
 
-# --- OCR (LandingAI — legacy, kept for fallback) ---
-landingai==0.3.49
-landingai-ade==0.21.2
-
 # --- OCR orientation detection ---
 pytesseract
 

@@ -74,8 +74,9 @@ Production uses `AzureInvoiceProcessor` (Azure OpenAI). `GPTInvoiceProcessor` (d
 
 - `STORAGE_BACKEND` — `local`, `s3`, or `azure`
 - `OPENAI_API_KEY` — for GPT processor and document analysis
-- `VISION_AGENT_API_KEY` — for LandingAI OCR
 - `AZURE_ENDPOINT`, `AZURE_OPENAI_KEY`, `AZURE_OPENAI_API_VERSION` — for Azure OpenAI processor
+- `MISTRAL_API_KEY` — for Mistral OCR
+- `AZURE_DOCINTEL_ENDPOINT`, `AZURE_DOCINTEL_KEY` — for Azure Document Intelligence OCR
 - `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY` — for Azure blob storage
 - `REDIS_URL` — Redis connection for RQ job queue
  `INVOICE_API_KEY` — API authentication

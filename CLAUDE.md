@@ -72,7 +72,7 @@ FastAPI app with API key auth (`X-Api-Key` header, checked against `INVOICE_API_
 
 ### OCR Engines (`ocr/`)
 
-All inherit from `BaseOCREngine`. Production engine is `DualOCRProcessor` (`ocr/ocr_dual.py`) which runs Mistral OCR and Azure Document Intelligence in parallel, merging their outputs per page. Others exist for experimentation (Tesseract, LandingAI, Google Vision, Docling).
+All inherit from `BaseOCREngine`. Production engine is `DualOCRProcessor` (`ocr/ocr_dual.py`) which runs Mistral OCR and Azure Document Intelligence in parallel, merging their outputs per page. If one engine fails (after 3 retries), it gracefully degrades to single-engine mode and fires a Sentry warning. Others exist for experimentation (Tesseract, Google Vision, Docling).
 
 ### LLM Processors (`processors/`)
 
@@ -87,18 +87,28 @@ Production uses `AzureInvoiceProcessor` (Azure OpenAI). `GPTInvoiceProcessor` (d
 ## Key Environment Variables
 
 - `STORAGE_BACKEND` — `local`, `s3`, or `azure`
-- `OPENAI_API_KEY` — for GPT processor and document analysis
 - `AZURE_ENDPOINT`, `AZURE_OPENAI_KEY`, `AZURE_OPENAI_API_VERSION` — for Azure OpenAI processor
 - `MISTRAL_API_KEY` — for Mistral OCR
 - `AZURE_DOCINTEL_ENDPOINT`, `AZURE_DOCINTEL_KEY` — for Azure Document Intelligence OCR
 - `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_STORAGE_ACCOUNT_KEY` — for Azure blob storage
 - `REDIS_URL` — Redis connection for RQ job queue
- `INVOICE_API_KEY` — API authentication
+- `INVOICE_API_KEY` — API authentication (also accepts `INVOICE_API_KEYS` for comma-separated list)
 - `RQ_QUEUE_NAME` — defaults to `invoice-jobs`
+- `SENTRY_DSN` — optional, enables error tracking and OCR degradation alerts
+
+See `.env.example` for the full list with defaults.
 
 ## Deployment
 Deployed on Azure Container Apps (API + worker) with Azure Cache for Redis (Basic C0), Azure Blob Storage, and Azure OpenAI. See `azure_deployment_plan.md` for full infrastructure details and `deploy.sh` for the deployment script. The Dockerfile sets `PYTHONPATH=/app`.
 
 Worker is configured with `min-replicas 0` and KEDA scaling on Redis queue length (1200s cooldown). It scales to zero when idle and wakes on first enqueued job.
 
-**Important:** `deploy.sh` defaults to the `latest` tag. Redeploying with the same tag won't create a new revision — use a unique tag like `./deploy.sh v20260414` to force a new revision.
+**Important:** `deploy.sh` defaults to the `latest` tag. Redeploying with the same tag won't create a new revision — use a unique tag like `./deploy.sh v20260416` to force a new revision.
+
+## Resilience
+
+All external API calls (Mistral OCR, Azure Document Intelligence, Azure OpenAI) use tenacity retries: 3 attempts with exponential backoff (2s–30s). Retry attempts are logged via structlog.
+
+- **DualOCR fallback:** If one OCR engine fails after retries, the pipeline continues with the other engine's output. A `sentry_sdk.capture_message` (level=warning) fires so you can alert on degradation even when jobs succeed. Only raises if both engines fail.
+- **RQ job retry:** Jobs are enqueued with `Retry(max=2)` — if the entire pipeline fails, RQ re-enqueues up to 2 more times.
+- **Retry helper:** `utils.log_retry` is the shared tenacity `before_sleep` callback. Retried functions: `ocr_mistral_v2._process_image`, `ocr_azure_docintel.extract_text`, `processors.azure_processor._call_openai`, `invoice._call_analyze_llm`.

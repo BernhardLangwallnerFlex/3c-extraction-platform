@@ -89,7 +89,7 @@ def process_file(file_id: str):
         elif backend == "azure":
             output_prefix = os.getenv("AZURE_OUTPUT_PREFIX")
         else:
-            output_prefix = Path(os.getenv("LOCAL_STORAGE_BASE_DIR", Path.cwd()))
+            output_prefix = os.getenv("LOCAL_STORAGE_BASE_DIR", str(Path.cwd()))
         _validate_output_prefix(output_prefix)
 
         invoice = Invoice(

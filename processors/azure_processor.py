@@ -1,12 +1,25 @@
 from openai import AzureOpenAI
-from utils import convert_file_to_images, extract_json_from_response
+from utils import convert_file_to_images, extract_json_from_response, log_retry
 import base64
 from prompt_building.prompt_building import build_prompt_from_config
 import json
 import re
 import structlog
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 log = structlog.get_logger()
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30),
+       before_sleep=log_retry, reraise=True)
+def _call_openai(client, model, content_blocks):
+    """Call Azure OpenAI with retry on transient failures."""
+    return client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": content_blocks}],
+        temperature=0,
+        seed=42,
+    )
 
 
 class AzureInvoiceProcessor:
@@ -82,12 +95,7 @@ class AzureInvoiceProcessor:
                     }
                 )
         model = self.vision_model if use_vision else self.model
-        response = self.client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": content_blocks}],
-                temperature=0,
-                seed=42
-            )
+        response = _call_openai(self.client, model, content_blocks)
 
         usage = response.usage
         prompt_tokens = usage.prompt_tokens

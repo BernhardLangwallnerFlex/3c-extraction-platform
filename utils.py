@@ -1,11 +1,25 @@
 import base64
 from PIL import Image
 import re
-import json 
+import json
 import fitz  # PyMuPDF
 import tempfile
 import csv
 from PIL import Image
+import structlog
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+_retry_log = structlog.get_logger()
+
+
+def log_retry(retry_state):
+    """Tenacity before_sleep callback — logs each retry with structured context."""
+    _retry_log.warning(
+        "retrying",
+        attempt=retry_state.attempt_number,
+        wait_s=round(retry_state.next_action.sleep, 1),
+        error=str(retry_state.outcome.exception()),
+    )
 
 
 def strip_ocr_element_ids(text: str) -> str:

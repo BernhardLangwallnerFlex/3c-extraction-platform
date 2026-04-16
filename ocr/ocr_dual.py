@@ -6,9 +6,13 @@ Combined cost ~$0.0025/page (12x cheaper than LandingAI).
 """
 import os
 from concurrent.futures import ThreadPoolExecutor
+import sentry_sdk
+import structlog
 from ocr.ocr_mistral_v2 import MistralOCRProcessor
 from ocr.ocr_azure_docintel import AzureDocIntelOCR
 from utils import strip_ocr_element_ids
+
+log = structlog.get_logger()
 
 
 class DualOCRProcessor:
@@ -21,13 +25,36 @@ class DualOCRProcessor:
         """Run both OCR engines in parallel and merge results per page.
 
         Returns (markdown, markdown_by_page) with both outputs labelled.
+        If one engine fails (after its own retries), degrades to the other.
+        Raises RuntimeError only if both engines fail.
         """
         with ThreadPoolExecutor(max_workers=2) as pool:
             future_mistral = pool.submit(self.mistral.extract_text, invoice)
             future_azure = pool.submit(self.azure.extract_text, invoice)
 
-            _, mistral_by_page = future_mistral.result()
-            _, azure_by_page = future_azure.result()
+            mistral_by_page = {}
+            azure_by_page = {}
+
+            try:
+                _, mistral_by_page = future_mistral.result()
+            except Exception as exc:
+                log.warning("ocr_engine_failed", engine="mistral", error=str(exc))
+                sentry_sdk.capture_message(
+                    f"Mistral OCR failed, degrading to Azure-only: {exc}",
+                    level="warning",
+                )
+
+            try:
+                _, azure_by_page = future_azure.result()
+            except Exception as exc:
+                log.warning("ocr_engine_failed", engine="azure_docintel", error=str(exc))
+                sentry_sdk.capture_message(
+                    f"Azure Doc Intel OCR failed, degrading to Mistral-only: {exc}",
+                    level="warning",
+                )
+
+            if not mistral_by_page and not azure_by_page:
+                raise RuntimeError("Both OCR engines failed")
 
         # Merge per page — union of all page numbers from both engines
         all_pages = sorted(set(mistral_by_page.keys()) | set(azure_by_page.keys()))

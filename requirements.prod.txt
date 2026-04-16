@@ -54,9 +54,10 @@ urllib3==1.26.20
 requests==2.32.5
 requests-toolbelt==1.0.0
 
-# --- Monitoring ---
+# --- Monitoring & Resilience ---
 sentry-sdk[fastapi]
 structlog
+tenacity==8.5.0
 
 # --- Misc transitive deps ---
 six==1.17.0

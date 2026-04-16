@@ -5,7 +5,8 @@ import tempfile
 from pathlib import Path
 from typing import Union
 from mistralai import Mistral
-from utils import encode_image_to_base64
+from tenacity import retry, stop_after_attempt, wait_exponential
+from utils import encode_image_to_base64, log_retry
 
 
 class MistralOCRProcessor:
@@ -30,6 +31,8 @@ class MistralOCRProcessor:
         markdown = "\n\n".join(markdown_by_page.values())
         return markdown, markdown_by_page
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30),
+           before_sleep=log_retry, reraise=True)
     def _process_image(self, image_path: str) -> str:
         b64 = encode_image_to_base64(image_path)
         ocr_response = self.client.ocr.process(

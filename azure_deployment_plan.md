@@ -266,11 +266,11 @@ az containerapp create \
   --scale-rule-name redis-queue \
   --scale-rule-type redis \
   --scale-rule-metadata \
-    "hostFromEnv=REDIS_URL" \
+    "addressFromEnv=KEDA_REDIS_HOST" \
     "listName=rq:queue:invoice-jobs" \
     "listLength=1" \
     "enableTLS=true" \
-  --scale-rule-auth "password=redis-url" \
+  --scale-rule-auth "password=redis-password" \
   --command "python" "jobs/worker.py" \
   --env-vars \
     STORAGE_BACKEND=azure \
@@ -281,14 +281,18 @@ az containerapp create \
     AZURE_ENDPOINT="https://3cinfoextraction.cognitiveservices.azure.com/" \
     AZURE_OPENAI_API_VERSION="2024-12-01-preview" \
     OPENAI_TEXT_MODEL=gpt-4.1 \
-    OPENAI_VISION_MODEL=gpt-4o
+    OPENAI_VISION_MODEL=gpt-4o \
+    KEDA_REDIS_HOST="${REDIS_HOST}:6380"
 
 # Step 2: Set secrets (same values, separate app)
+# NOTE: redis-password must be JUST the key, not the full URL.
+# KEDA's Redis scaler can't parse full rediss:// URLs.
 az containerapp secret set \
   --name ca-invoice-worker \
   --resource-group $RG \
   --secrets \
     redis-url="${REDIS_URL}" \
+    redis-password="${REDIS_KEY}" \
     azure-storage-key="<YOUR_AZURE_STORAGE_ACCOUNT_KEY>" \
     openai-api-key="<YOUR_OPENAI_API_KEY>" \
     vision-agent-key="<YOUR_VISION_AGENT_API_KEY>" \

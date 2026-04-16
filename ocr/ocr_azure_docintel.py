@@ -4,6 +4,8 @@ from pathlib import Path
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.documentintelligence.models import AnalyzeDocumentRequest, DocumentContentFormat
 from azure.core.credentials import AzureKeyCredential
+from tenacity import retry, stop_after_attempt, wait_exponential
+from utils import log_retry
 
 
 class AzureDocIntelOCR:
@@ -21,6 +23,8 @@ class AzureDocIntelOCR:
         )
         self.name = name
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30),
+           before_sleep=log_retry, reraise=True)
     def extract_text(self, invoice):
         """Extract text from document, returning (markdown, markdown_by_page)."""
         p = Path(invoice.local_input_path)

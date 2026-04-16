@@ -1,0 +1,40 @@
+services:
+  api:
+    build: .
+    container_name: invoice_api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    volumes:
+      - .:/app
+      - ./temp:/app/temp
+    env_file:
+      - .env
+    environment:
+      STORAGE_BACKEND: "local"
+      LOCAL_STORAGE_BASE_DIR: "/app/temp"
+      REDIS_URL: "redis://redis:6379/0"
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+
+  worker:
+    build: .
+    container_name: invoice_worker
+    depends_on:
+      - redis
+    volumes:
+      - .:/app
+      - ./temp:/app/temp
+    env_file:
+      - .env
+    environment:
+      STORAGE_BACKEND: "local"
+      LOCAL_STORAGE_BASE_DIR: "/app/temp"
+      REDIS_URL: "redis://redis:6379/0"
+    command: python jobs/worker.py
+
+  redis:
+    image: redis:7
+    container_name: invoice_redis
+    ports:
+      - "6379:6379"

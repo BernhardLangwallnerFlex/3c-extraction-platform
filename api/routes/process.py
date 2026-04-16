@@ -3,7 +3,7 @@ import structlog
 from fastapi import APIRouter, HTTPException
 from redis import Redis
 from redis.exceptions import RedisError
-from rq import Queue
+from rq import Queue, Retry
 
 from jobs.tasks import process_file
 from api.models import ProcessRequest
@@ -28,7 +28,7 @@ def get_queue() -> Queue:
 async def process_document(req: ProcessRequest):
     try:
         queue = get_queue()
-        job = queue.enqueue(process_file, req.file_id, job_timeout=3600,result_ttl=3600,failure_ttl=3600)  # 1 hour timeout
+        job = queue.enqueue(process_file, req.file_id, job_timeout=3600, result_ttl=3600, failure_ttl=3600, retry=Retry(max=2))
     except RedisError as e:
         logger.error("redis_connection_failed", endpoint="process", error=str(e))
         raise HTTPException(status_code=503, detail="Service temporarily unavailable")

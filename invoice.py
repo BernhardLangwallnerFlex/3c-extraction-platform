@@ -12,6 +12,8 @@ from PIL import Image
 import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
+from utils import log_retry
 import shutil
 from ocr.base_ocr import BaseOCREngine
 from utils import extract_json_from_response, strip_ocr_element_ids
@@ -22,6 +24,18 @@ from prompt_building.prompt_building import build_prompt_for_analyze_document, g
 from storage.storage import StorageBackend, LocalStorage, StorageKey
 
 load_dotenv()
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30),
+       before_sleep=log_retry, reraise=True)
+def _call_analyze_llm(client, model, content_blocks):
+    """Call Azure OpenAI for document analysis with retry on transient failures."""
+    return client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": content_blocks}],
+        temperature=0,
+        seed=42,
+    )
 
 
 @dataclass
@@ -178,12 +192,7 @@ class Invoice:
             azure_endpoint=os.getenv("AZURE_ENDPOINT"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )
-        response = client.chat.completions.create(
-            model=os.getenv("OPENAI_VISION_MODEL", "gpt-5.4"),
-            messages=[{"role": "user", "content": content_blocks}],
-            temperature=0,
-            seed=42,
-        )
+        response = _call_analyze_llm(client, os.getenv("OPENAI_VISION_MODEL", "gpt-5.4"), content_blocks)
         self.analysis_dict = extract_json_from_response(response.choices[0].message.content)
 
     def _subdoc_key(self, ext: str, document_number: int) -> str:

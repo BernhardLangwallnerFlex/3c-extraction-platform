@@ -6,18 +6,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Veterinary invoice data extraction pipeline for 3C. Accepts PDF invoices (often multi-invoice PDFs), splits them into sub-documents, performs OCR, then uses LLM vision+text to extract structured JSON (line items, totals, sender/recipient, animals, GOT codes, etc.). Domain language is German.
 
+## Local Development
+
+Copy `.env.example` to `.env` and fill in API keys (Mistral, Azure OpenAI, Azure Doc Intel).
+
+**Docker mode (full stack):**
+```bash
+docker compose up --build        # API (port 8000) + worker + Redis
+python test_api.py               # uploads a PDF and polls until done
+```
+
+**Native mode (faster iteration, hot-reload):**
+```bash
+docker compose up redis           # Redis only
+# Terminal 1 — API (auto-reloads on code changes):
+STORAGE_BACKEND=local REDIS_URL=redis://localhost:6379/0 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+# Terminal 2 — Worker (restart manually after code changes):
+STORAGE_BACKEND=local REDIS_URL=redis://localhost:6379/0 python jobs/worker.py
+# Terminal 3 — Test:
+python test_api.py
+```
+
+Output files land in `./temp/` when using local storage.
+
 ## Commands
 
 ```bash
-# Run the API server locally
-uvicorn api.main:app --host 0.0.0.0 --port 8000 --log-level debug
-
-# Run the RQ worker (requires Redis)
-python jobs/worker.py
-
-# Quick local test against the API
-python test_api.py
-
 # Ad-hoc processing script (edit main.py to set file paths)
 python main.py
 
@@ -83,4 +97,8 @@ Production uses `AzureInvoiceProcessor` (Azure OpenAI). `GPTInvoiceProcessor` (d
 - `RQ_QUEUE_NAME` — defaults to `invoice-jobs`
 
 ## Deployment
-Deployed on Azure Container Apps (API + worker) with Azure Cache for Redis, Azure Blob Storage, and Azure OpenAI. See `azure_deployment_plan.md` for full infrastructure details and `deploy.sh` for the deployment script. The Dockerfile sets `PYTHONPATH=/app`.
+Deployed on Azure Container Apps (API + worker) with Azure Cache for Redis (Basic C0), Azure Blob Storage, and Azure OpenAI. See `azure_deployment_plan.md` for full infrastructure details and `deploy.sh` for the deployment script. The Dockerfile sets `PYTHONPATH=/app`.
+
+Worker is configured with `min-replicas 0` and KEDA scaling on Redis queue length (1200s cooldown). It scales to zero when idle and wakes on first enqueued job.
+
+**Important:** `deploy.sh` defaults to the `latest` tag. Redeploying with the same tag won't create a new revision — use a unique tag like `./deploy.sh v20260414` to force a new revision.

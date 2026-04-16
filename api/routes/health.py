@@ -28,19 +28,23 @@ def ready(response: Response):
     except Exception as e:
         checks["redis"] = f"error: {e}"
 
-    # Azure Blob Storage
-    try:
-        from storage.storage import AzureBlobStorage
-        account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
-        account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
-        if account_name and account_key:
-            storage = AzureBlobStorage(account_name=account_name, account_key=account_key)
-            storage._service.get_account_information()
-            checks["azure_storage"] = "ok"
-        else:
-            checks["azure_storage"] = "not_configured"
-    except Exception as e:
-        checks["azure_storage"] = f"error: {e}"
+    # Storage backend
+    storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
+    if storage_backend == "azure":
+        try:
+            from storage.storage import AzureBlobStorage
+            account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
+            account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
+            if account_name and account_key:
+                storage = AzureBlobStorage(account_name=account_name, account_key=account_key)
+                storage._service.get_account_information()
+                checks["storage"] = "ok"
+            else:
+                checks["storage"] = "not_configured"
+        except Exception as e:
+            checks["storage"] = f"error: {e}"
+    else:
+        checks["storage"] = "ok"
 
     all_ok = all(v == "ok" for v in checks.values())
     if not all_ok:

@@ -37,7 +37,7 @@ def _uploads_prefix() -> str:
     elif backend == "s3":
         prefix = os.getenv("S3_INPUT_PREFIX", "uploads").rstrip("/")
     else:
-        prefix = os.getenv("LOCAL_STORAGE_BASE_DIR", Path.cwd()).rstrip("/")
+        prefix = os.getenv("LOCAL_STORAGE_BASE_DIR", str(Path.cwd())).rstrip("/")
 
     if backend == "azure" and not prefix.startswith("az://"):
         raise RuntimeError(

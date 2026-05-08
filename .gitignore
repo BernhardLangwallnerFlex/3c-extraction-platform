@@ -102,6 +102,8 @@ test/
 !costing.md
 !performance_todos.md
 !vetcostcheck_api_doc.md
+!redis_resilience_plan.md
+!docs/**/*.md
 
 # Temporary files
 *.tmp

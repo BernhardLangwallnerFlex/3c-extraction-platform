@@ -13,6 +13,16 @@
 - [ ] **Cap ThreadPoolExecutor for subdocument extraction** (low): `invoice.py:312` sets `max_workers=len(self.subdocuments)` — cap at 5 to prevent rate limiting.
 - [ ] **Reuse AzureOpenAI client in analyze_document()** (low): `invoice.py:176-180` creates a new client every call. Create once in `__init__()`.
 
+## Pipeline — Redis
+
+See [redis_resilience_plan.md](redis_resilience_plan.md) for context (Sentry `PYTHON-FASTAPI-9`, 2026-05-06) and full proposal. Deferred — system has been stable, pick up if the issue recurs.
+
+- [ ] **Reuse a single Redis client via FastAPI lifespan + `Depends`**: Today every request to `/job/{job_id}`, `/process`, `/ready` builds a fresh `Redis.from_url(...)`. Move to one app-scoped client (`api/routes/job.py:15`, `api/routes/process.py:17`, `api/routes/health.py:23`).
+- [ ] **Add redis-py–level retry on transient errors**: `Retry(ExponentialBackoff(), 3)` with `retry_on_timeout=True` and `retry_on_error=[ConnectionError, TimeoutError]`. Distinct from RQ's job-level `Retry`; would have absorbed the 2026-05-06 blip.
+- [ ] **Worker keepalive + health check**: Add `socket_keepalive=True` and `health_check_interval=30` to the long-lived worker connection (`jobs/worker.py:34`) so reaped idle connections are detected before the next dequeue.
+- [ ] **Collapse Redis client construction into one helper**: After the above, fold kwargs (timeouts, retry, keepalive) into a single factory shared by API lifespan and worker.
+- [ ] **Consider Standard C0 if 503s recur**: Basic C0 is single-node, no SLA. Upgrade only if Sentry shows Redis-driven 503s in a 30-day window after the items above ship.
+
 ## Cleanup
 - [x] **Remove LandingAI dependency**: Removed `landingai`/`landingai-ade` from requirements. OCR processor code kept for reference.
 - [ ] **Fix cleanup inconsistency**: `cleanup_temporary_files()` deletes storage artifacts but only `cleanup_local()` (local temp files) is called in production (`tasks.py:128`).

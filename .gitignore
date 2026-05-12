@@ -54,6 +54,8 @@ document_experimentation.ipynb
 !package.json
 !package-lock.json
 !tsconfig.json
+!products/*/extract_schema.json
+!products/*/analyze_schema.json
 credentials.json
 *_credentials.json
 *-credentials.json

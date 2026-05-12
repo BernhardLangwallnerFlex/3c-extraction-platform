@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vetcostcheck extraction output",
+  "description": "Structured invoice/receipt/prescription data extracted from a single veterinary sub-document. Translated from the JSON-Ziel-Schema embedded in products/vetcostcheck/extract_prompt.py — this file is documentation and a future validation target; it is not currently enforced against the LLM output.",
+  "type": "object",
+  "properties": {
+    "type": {"type": ["string", "null"], "enum": ["invoice", "receipt", "prescription", null]},
+    "currency": {"type": ["string", "null"], "description": "ISO 4217 code, e.g. EUR"},
+    "number": {"type": ["string", "null"]},
+    "issuedAt": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+    "serviceDates": {"type": "array", "items": {"type": "string"}},
+    "sender": {
+      "type": "object",
+      "properties": {
+        "practiceName": {"type": ["string", "null"]},
+        "address": {"type": ["string", "null"]},
+        "postcode": {"type": ["string", "null"]},
+        "city": {"type": ["string", "null"]},
+        "country": {"type": ["string", "null"]},
+        "contactPhone": {"type": ["string", "null"]},
+        "contactMail": {"type": ["string", "null"]},
+        "vatId": {"type": ["string", "null"]}
+      }
+    },
+    "clinicians": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": ["string", "null"]},
+          "title": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "payment": {
+      "type": "object",
+      "properties": {
+        "iban": {"type": ["string", "null"]},
+        "bic": {"type": ["string", "null"]},
+        "bankName": {"type": ["string", "null"]},
+        "dueDate": {"type": ["string", "null"], "description": "YYYY-MM-DD"}
+      }
+    },
+    "recipient": {
+      "type": "object",
+      "properties": {
+        "companyName": {"type": ["string", "null"]},
+        "contactFirstname": {"type": ["string", "null"]},
+        "contactName": {"type": ["string", "null"]},
+        "street": {"type": ["string", "null"]},
+        "postcode": {"type": ["string", "null"]},
+        "city": {"type": ["string", "null"]},
+        "country": {"type": ["string", "null"]},
+        "contactPhone": {"type": ["string", "null"]},
+        "contactMail": {"type": ["string", "null"]}
+      }
+    },
+    "animals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": ["string", "null"]},
+          "species": {"type": ["string", "null"]},
+          "breed": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "diagnoses": {"type": "array", "items": {"type": "string"}},
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {"type": ["string", "null"]},
+          "got": {
+            "type": "object",
+            "properties": {
+              "code": {"type": ["string", "null"]},
+              "multiplier": {"type": ["number", "null"]},
+              "raw": {"type": ["string", "null"]}
+            }
+          },
+          "animal": {
+            "type": "object",
+            "properties": {
+              "name": {"type": ["string", "null"]},
+              "species": {"type": ["string", "null"]}
+            }
+          },
+          "qty": {"type": ["number", "null"]},
+          "unit": {"type": ["string", "null"]},
+          "unitPriceNet": {"type": ["number", "null"]},
+          "lineTotalNet": {"type": ["number", "null"]},
+          "serviceDate": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+          "source": {
+            "type": "object",
+            "properties": {
+              "snippet": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "properties": {
+        "net": {"type": ["number", "null"]},
+        "tax": {
+          "type": "object",
+          "properties": {
+            "rate": {"type": ["number", "null"]},
+            "amount": {"type": ["number", "null"]}
+          }
+        },
+        "gross": {"type": ["number", "null"]},
+        "discount": {"type": ["number", "null"]}
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

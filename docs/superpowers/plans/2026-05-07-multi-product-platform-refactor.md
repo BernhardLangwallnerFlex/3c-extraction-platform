@@ -103,7 +103,7 @@ The Phase 1 refactor must preserve byte-identical extraction behavior. This task
 - Create: `tests/regression/references/` (directory for pinned JSON outputs)
 - Create: `tests/regression/inputs/` (symlink or directory for test PDFs)
 
-- [ ] **Step 1: Choose 3–5 test PDFs**
+- [x] **Step 1: Choose 3–5 test PDFs**
 
 Pick representative samples from `3C_testdaten_pdf/` covering: a single-invoice document, a multi-invoice PDF, and a document containing a pharmacy receipt or other edge case. Confirm each is currently in production use.
 
@@ -116,7 +116,7 @@ cp 3C_testdaten_pdf/<file2>.pdf tests/regression/inputs/
 cp 3C_testdaten_pdf/<file3>.pdf tests/regression/inputs/
 ```
 
-- [ ] **Step 2: Write the regression check script**
+- [x] **Step 2: Write the regression check script**
 
 Create `scripts/regression_check.py`:
 
@@ -208,7 +208,7 @@ if __name__ == "__main__":
 
 If `save_upload` doesn't exist with that signature, look at how `api/routes/upload.py` saves uploads and call the same helper. The point is to get a `file_id` back and pass it to `process_file()`.
 
-- [ ] **Step 3: Capture initial references against current main**
+- [x] **Step 3: Capture initial references against current main**
 
 ```bash
 python scripts/regression_check.py --capture
@@ -217,7 +217,7 @@ ls tests/regression/references/
 
 Expected: one JSON file per PDF in `tests/regression/inputs/`. **This is the snapshot of pre-refactor behavior.** Do not edit these files during the refactor.
 
-- [ ] **Step 4: Confirm the check is wired**
+- [x] **Step 4: Confirm the check is wired**
 
 ```bash
 python scripts/regression_check.py
@@ -227,12 +227,20 @@ Expected: `[PASS]` for every PDF, exit code 0. (LLM responses are non-determinis
 
 If `[FAIL]` or non-deterministic output: investigate. The seeds may not be wired through every LLM call, or the test PDFs may be too sensitive. Trim the asserted shape (e.g., compare structural keys + numeric totals only) to make it stable before proceeding.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add scripts/__init__.py scripts/regression_check.py tests/regression/references/ tests/regression/inputs/
 git commit -m "Add regression_check.py with pinned references (pre-refactor baseline)"
 ```
+
+**Deviations from plan as executed:**
+- `save_upload` signature in actual code is `(file_bytes, original_filename=None, content_type=None)` (uses env-driven storage), not the plan's `(fh, filename=, storage=)`. Script adapted.
+- LLM determinism (seed=42 + temperature=0) does not hold on Azure OpenAI gpt-5.4 deployment. Byte-equal output is unreliable.
+- Comparator is structural+numeric only, with smoothers: `.warnings` subtree skipped, `None ↔ str` treated as same shape, length differences on `.clinicians` and `.diagnoses` ignored. See `scripts/regression_check.py` module docstring.
+- `VCC_Viele_Dokumente.pdf` (multi-invoice, 4 subdocs, 22-item subdoc) was too LLM-noisy even for structural+numeric. Special-cased to shape-only check (top keys + `number_of_subdocuments` + per-subdoc items count).
+- Two consecutive PASS runs confirmed stability before committing.
+- `tests/regression/inputs/` and `tests/regression/references/` are NOT committed (customer-shaped data; operator re-captures locally each checkpoint).
 
 ---
 

@@ -19,7 +19,7 @@
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Rename the repo on GitHub**
+- [x] **Step 1: Rename the repo on GitHub**
 
 ```bash
 gh repo rename 3c-extraction-platform
@@ -27,7 +27,7 @@ gh repo rename 3c-extraction-platform
 
 GitHub auto-redirects the old URL, so existing clones keep working without action.
 
-- [ ] **Step 2: Update local working copy's remote URL**
+- [x] **Step 2: Update local working copy's remote URL**
 
 ```bash
 git remote set-url origin "$(gh repo view --json sshUrl -q .sshUrl)"
@@ -36,7 +36,7 @@ git remote -v
 
 Expected: `origin` now points at `git@github.com:<owner>/3c-extraction-platform.git`.
 
-- [ ] **Step 3: Update README.md to reflect multi-product scope**
+- [x] **Step 3: Update README.md to reflect multi-product scope**
 
 Replace the existing README contents with:
 
@@ -53,7 +53,7 @@ Document-extraction platform serving multiple insurance products. Each product (
 See `CLAUDE.md` for development setup and `docs/superpowers/specs/2026-05-07-multi-product-extraction-design.md` for the platform design.
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md
@@ -69,14 +69,14 @@ git commit -m "Rename repo, update README for multi-product platform scope"
 - Create: `products/__init__.py`
 - Create: `products/vetcostcheck/__init__.py`
 
-- [ ] **Step 1: Create the directories with empty `__init__.py` files**
+- [x] **Step 1: Create the directories with empty `__init__.py` files**
 
 ```bash
 mkdir -p core products/vetcostcheck
 touch core/__init__.py products/__init__.py products/vetcostcheck/__init__.py
 ```
 
-- [ ] **Step 2: Verify nothing is broken**
+- [x] **Step 2: Verify nothing is broken**
 
 ```bash
 python -c "import core; import products; import products.vetcostcheck; print('imports ok')"
@@ -84,7 +84,7 @@ python -c "import core; import products; import products.vetcostcheck; print('im
 
 Expected: `imports ok`.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add core/__init__.py products/__init__.py products/vetcostcheck/__init__.py

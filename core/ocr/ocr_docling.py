@@ -3,7 +3,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 import tempfile
 import os
-from invoice import Invoice
+from core.pipeline import Pipeline
 from typing import Union
 
 
@@ -18,7 +18,7 @@ class DoclingOCR:
         self.converter = DocumentConverter()
         self.name = name
     
-    def extract_text(self, invoice: Invoice):
+    def extract_text(self, invoice: Pipeline):
         """
         Extract text from document using Docling.
         

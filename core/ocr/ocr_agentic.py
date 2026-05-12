@@ -2,7 +2,7 @@ import os
 from landingai_ade import LandingAIADE
 from dotenv import load_dotenv
 import mimetypes
-from invoice import Invoice
+from core.pipeline import Pipeline
 from pathlib import Path
 from typing import Union
 load_dotenv()
@@ -17,7 +17,7 @@ class OCRAgenticProcessor:
         self.model_id = model_id
         self.name = name
 
-    def extract_text(self, invoice: "Invoice"):
+    def extract_text(self, invoice: "Pipeline"):
         p = Path(invoice.local_input_path)  # ensure Path
 
         data = p.read_bytes()

@@ -50,7 +50,7 @@ class SubdocumentArtifact:
     image_key: StorageKey
 
 
-class Invoice:
+class Pipeline:
     def __init__(
         self,
         file_key: StorageKey,

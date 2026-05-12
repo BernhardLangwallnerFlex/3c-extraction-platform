@@ -708,27 +708,27 @@ The `Invoice` class is the central pipeline orchestrator. Renaming both file and
 - Rename: `class Invoice` → `class Pipeline`
 - Modify: every file importing `Invoice` (use grep)
 
-- [ ] **Step 1: Move the file**
+- [x] **Step 1: Move the file**
 
 ```bash
 git mv invoice.py core/pipeline.py
 ```
 
-- [ ] **Step 2: Rename the class inside `core/pipeline.py`**
+- [x] **Step 2: Rename the class inside `core/pipeline.py`**
 
 Open `core/pipeline.py` and rename:
 - `class Invoice:` → `class Pipeline:`
 - All internal `self` references stay unchanged — only the class name changes.
 - Module-level helpers (e.g. `_call_analyze_llm`) stay.
 
-- [ ] **Step 3: Update the import path (mechanical)**
+- [x] **Step 3: Update the import path (mechanical)**
 
 ```bash
 git grep -l -E "^from invoice import" -- '*.py' \
   | xargs -I{} sed -i '' 's|^from invoice import|from core.pipeline import|' {}
 ```
 
-- [ ] **Step 4: Find every remaining `Invoice` reference and review by hand**
+- [x] **Step 4: Find every remaining `Invoice` reference and review by hand**
 
 ```bash
 git grep -n "Invoice" -- '*.py'
@@ -747,7 +747,7 @@ git grep -n "Invoice" -- '*.py'
 git diff -- '*.py' | head -100
 ```
 
-- [ ] **Step 5: Smoke-import**
+- [x] **Step 5: Smoke-import**
 
 ```bash
 python -c "from core.pipeline import Pipeline; print(Pipeline)"
@@ -755,7 +755,7 @@ python -c "from core.pipeline import Pipeline; print(Pipeline)"
 
 Expected: `<class 'core.pipeline.Pipeline'>`.
 
-- [ ] **Step 6: Run the regression check**
+- [x] **Step 6: Run the regression check**
 
 ```bash
 python scripts/regression_check.py
@@ -763,12 +763,17 @@ python scripts/regression_check.py
 
 Expected: `[PASS]`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
 git commit -m "Rename invoice.py to core/pipeline.py; Invoice -> Pipeline"
 ```
+
+**Deviations from plan as executed:**
+- First regression run produced a flake (5 LLM-null-vs-float diffs on `testrechnung_03_katze.pdf:items[*].unitPriceNet`). Re-ran once → 3/3 PASS. Class rename cannot change extraction output, so this confirms persistent LLM nondeterminism on that PDF's price fields. Same pattern flagged in Task 3 deviations; not a refactor regression.
+- `class Invoice` references renamed at: `core/pipeline.py:53` (class def), `core/jobs/tasks.py:95` (constructor call), `core/ocr/ocr_agentic.py:20` (type hint), `core/ocr/ocr_docling.py:21` (type hint), `main.py:35` (constructor call). Variable name `invoice` preserved (variable rename is a Task 9 cosmetic option).
+- Left alone: docstring/comment mentions of "Invoice" in `core/ocr/ocr_docling.py:26,97`, and the unrelated pydantic class `Invoice` in `models/invoice_model.py` (imported by `core/processors/agentic_processor.py`).
 
 ---
 

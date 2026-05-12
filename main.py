@@ -3,7 +3,7 @@ from core.ocr.ocr_tesseract import TesseractOCR
 from core.ocr.ocr_mistral import MistralOCR
 from core.ocr.ocr_googlevision import GoogleOCR
 from core.ocr.ocr_agentic import OCRAgenticProcessor
-from invoice import Invoice
+from core.pipeline import Pipeline
 from dotenv import load_dotenv
 import os
 from pathlib import Path
@@ -32,7 +32,7 @@ agentic_ocr_engine = OCRAgenticProcessor(name = "agentic_ocr")
 #storage = S3Storage(region_name="eu-central-1")
 storage = AzureBlobStorage(account_name=os.getenv("AZURE_STORAGE_ACCOUNT_NAME"), account_key=os.getenv("AZURE_STORAGE_ACCOUNT_KEY"))
 
-inv = Invoice(
+inv = Pipeline(
     file_key="az://invoices/230075012T_Splitt.pdf",
     ocr_engine=agentic_ocr_engine,
     storage=storage,

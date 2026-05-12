@@ -7,7 +7,7 @@ import structlog
 from core.storage.file_storage import get_file_key
 
 from core.storage.storage import LocalStorage, S3Storage, AzureBlobStorage
-from invoice import Invoice
+from core.pipeline import Pipeline
 
 from core.ocr.ocr_dual import DualOCRProcessor
 from core.processors.azure_processor import AzureInvoiceProcessor
@@ -92,7 +92,7 @@ def process_file(file_id: str):
             output_prefix = os.getenv("LOCAL_STORAGE_BASE_DIR", str(Path.cwd()))
         _validate_output_prefix(output_prefix)
 
-        invoice = Invoice(
+        invoice = Pipeline(
             file_key=file_key,
             ocr_engine=dual_ocr_engine,
             storage=storage,

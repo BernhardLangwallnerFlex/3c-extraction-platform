@@ -5,7 +5,7 @@ from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.ai.documentintelligence.models import AnalyzeDocumentRequest, DocumentContentFormat
 from azure.core.credentials import AzureKeyCredential
 from tenacity import retry, stop_after_attempt, wait_exponential
-from utils import log_retry
+from core.utils import log_retry
 
 
 class AzureDocIntelOCR:

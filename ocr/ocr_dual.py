@@ -10,7 +10,7 @@ import sentry_sdk
 import structlog
 from ocr.ocr_mistral_v2 import MistralOCRProcessor
 from ocr.ocr_azure_docintel import AzureDocIntelOCR
-from utils import strip_ocr_element_ids
+from core.utils import strip_ocr_element_ids
 
 log = structlog.get_logger()
 

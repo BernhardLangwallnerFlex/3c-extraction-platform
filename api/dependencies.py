@@ -1,6 +1,6 @@
 import structlog
 from fastapi import Header, HTTPException, status
-from config import API_KEYS
+from core.config import API_KEYS
 
 log = structlog.get_logger()
 

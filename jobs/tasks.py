@@ -11,7 +11,7 @@ from invoice import Invoice
 
 from ocr.ocr_dual import DualOCRProcessor
 from processors.azure_processor import AzureInvoiceProcessor
-from utils import ensure_json_serializable
+from core.utils import ensure_json_serializable
 
 load_dotenv()
 

@@ -1,5 +1,5 @@
 from openai import AzureOpenAI
-from utils import convert_file_to_images, extract_json_from_response, log_retry
+from core.utils import convert_file_to_images, extract_json_from_response, log_retry
 import base64
 from prompt_building.prompt_building import build_prompt_from_config
 import json

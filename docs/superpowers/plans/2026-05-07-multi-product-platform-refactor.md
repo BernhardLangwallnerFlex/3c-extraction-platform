@@ -253,14 +253,14 @@ The smallest possible refactor that exercises the full move-and-update-imports l
 - Move: `config.py` → `core/config.py`
 - Modify: any file importing `utils` or `config` (use grep to find)
 
-- [ ] **Step 1: Move the files preserving git history**
+- [x] **Step 1: Move the files preserving git history**
 
 ```bash
 git mv utils.py core/utils.py
 git mv config.py core/config.py
 ```
 
-- [ ] **Step 2: Find all imports that need updating**
+- [x] **Step 2: Find all imports that need updating**
 
 ```bash
 grep -rn -E "^(from|import) (utils|config)( |\.|$)" --include="*.py" \
@@ -269,7 +269,7 @@ grep -rn -E "^(from|import) (utils|config)( |\.|$)" --include="*.py" \
 
 Note: imports inside `core/` itself can use relative form (`from .utils import ...`) or absolute (`from core.utils import ...`). Pick one style and apply consistently — recommend absolute (`from core.utils import ...`) for clarity.
 
-- [ ] **Step 3: Rewrite the imports**
+- [x] **Step 3: Rewrite the imports**
 
 For every match from step 2, change:
 - `from utils import X` → `from core.utils import X`
@@ -296,7 +296,7 @@ git diff --stat
 git diff
 ```
 
-- [ ] **Step 4: Verify imports resolve**
+- [x] **Step 4: Verify imports resolve**
 
 ```bash
 python -c "from core.utils import log_retry; from core.config import REDIS_URL; print('ok')"
@@ -304,7 +304,7 @@ python -c "from core.utils import log_retry; from core.config import REDIS_URL; 
 
 Expected: `ok`. If `ImportError`, fix the offending file before proceeding.
 
-- [ ] **Step 5: Run the regression check**
+- [x] **Step 5: Run the regression check**
 
 ```bash
 docker compose up redis -d
@@ -313,12 +313,18 @@ STORAGE_BACKEND=local REDIS_URL=redis://localhost:6379/0 python scripts/regressi
 
 Expected: `[PASS]` for every PDF.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -u
 git commit -m "Move utils.py and config.py into core/ (thin-slice refactor)"
 ```
+
+**Deviations from plan as executed:**
+- No `import utils` / `import config` form existed; only `from X import Y`. The two sed lines for the bare-`import` form were no-ops.
+- 9 files had imports rewritten: `invoice.py`, `jobs/tasks.py`, `api/dependencies.py`, `ocr/{ocr_mistral.py,ocr_mistral_v2.py,ocr_azure_docintel.py,ocr_dual.py}`, `processors/{azure_processor.py,gpt_processor.py}`.
+- `BASE_DIR` and `FILES_DIR` in `core/config.py` now resolve relative to `core/` instead of repo root (creates `core/files/` on import instead of `files/`). Nothing references either constant elsewhere; dead-code-effect side effect.
+- Regression check (`scripts/regression_check.py`) used as the safety gate against pre-refactor references — all 3 PASS.
 
 ---
 

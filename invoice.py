@@ -13,10 +13,10 @@ import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
-from utils import log_retry
+from core.utils import log_retry
 import shutil
 from ocr.base_ocr import BaseOCREngine
-from utils import extract_json_from_response, strip_ocr_element_ids
+from core.utils import extract_json_from_response, strip_ocr_element_ids
 
 log = logging.getLogger(__name__)
 from prompt_building.prompt_building import build_prompt_for_analyze_document, get_full_prompt

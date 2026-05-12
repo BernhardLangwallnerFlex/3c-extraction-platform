@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Union
 from mistralai import Mistral
 from tenacity import retry, stop_after_attempt, wait_exponential
-from utils import encode_image_to_base64, log_retry
+from core.utils import encode_image_to_base64, log_retry
 
 
 class MistralOCRProcessor:

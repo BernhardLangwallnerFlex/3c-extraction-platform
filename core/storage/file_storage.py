@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from storage.storage import LocalStorage, S3Storage, AzureBlobStorage  # adjust to your actual module
+from core.storage.storage import LocalStorage, S3Storage, AzureBlobStorage  # adjust to your actual module
 
 
 def _require_env(name: str) -> str:

@@ -600,7 +600,7 @@ A single bulk move that relocates the rest of the Python source. Each move follo
 - Move: `prompt_building/` → `core/prompt_building/`
 - Modify: any file importing from those packages
 
-- [ ] **Step 1: Move all six packages**
+- [x] **Step 1: Move all six packages**
 
 ```bash
 git mv api core/api
@@ -611,7 +611,7 @@ git mv processors core/processors
 git mv prompt_building core/prompt_building
 ```
 
-- [ ] **Step 2: Find all imports that need updating**
+- [x] **Step 2: Find all imports that need updating**
 
 ```bash
 grep -rnE "^(from|import) (api|jobs|ocr|storage|processors|prompt_building)( |\.|$)" --include="*.py" \
@@ -620,7 +620,7 @@ grep -rnE "^(from|import) (api|jobs|ocr|storage|processors|prompt_building)( |\.
 
 This lists every file outside `core/` that imports a now-relocated package. Imports *inside* `core/` are also affected — handle them in step 3.
 
-- [ ] **Step 3: Rewrite imports in bulk**
+- [x] **Step 3: Rewrite imports in bulk**
 
 ```bash
 for pkg in api jobs ocr storage processors prompt_building; do
@@ -631,7 +631,7 @@ for pkg in api jobs ocr storage processors prompt_building; do
 done
 ```
 
-- [ ] **Step 4: Review the diff carefully**
+- [x] **Step 4: Review the diff carefully**
 
 ```bash
 git diff --stat
@@ -640,7 +640,7 @@ git diff -- '*.py' | head -200
 
 Sanity check: every changed import line should now start with `from core.<pkg>` or `import core.<pkg>`. No orphaned `from api`, `from jobs`, etc.
 
-- [ ] **Step 5: Update Dockerfile CMD if needed**
+- [x] **Step 5: Update Dockerfile CMD if needed**
 
 The current CMD is `uvicorn api.main:app`. After the move it must be `uvicorn core.api.main:app`. Edit `Dockerfile`:
 
@@ -650,7 +650,7 @@ CMD ["bash", "-lc", "uvicorn core.api.main:app --host 0.0.0.0 --port ${PORT:-800
 
 (This is a pre-emptive change — Task 12 rewrites the Dockerfile more thoroughly. Do this one-line change now so the regression check container can boot.)
 
-- [ ] **Step 6: Update docker-compose.yml worker command**
+- [x] **Step 6: Update docker-compose.yml worker command**
 
 The worker's command is currently `python jobs/worker.py`. Update to `python -m core.jobs.worker`:
 
@@ -661,7 +661,7 @@ command: python -m core.jobs.worker
 
 The `worker.py` script's `if __name__ == "__main__":` block is still at module level, so `python -m core.jobs.worker` runs it.
 
-- [ ] **Step 7: Smoke-import to catch any missed renames**
+- [x] **Step 7: Smoke-import to catch any missed renames**
 
 ```bash
 python -c "
@@ -676,7 +676,7 @@ print('all imports ok')
 
 Expected: `all imports ok`. If `ImportError`, find and fix the offending file. Common missed cases: imports that span lines, conditional imports, imports inside functions. Use `grep` to find any remaining references like `from api.` or `import jobs.`.
 
-- [ ] **Step 8: Run the regression check**
+- [x] **Step 8: Run the regression check**
 
 ```bash
 docker compose up redis -d
@@ -685,12 +685,17 @@ STORAGE_BACKEND=local REDIS_URL=redis://localhost:6379/0 python scripts/regressi
 
 Expected: `[PASS]` for every PDF.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add -A
 git commit -m "Move api/, jobs/, ocr/, storage/, processors/, prompt_building/ into core/"
 ```
+
+**Deviations from plan as executed:**
+- Plan's sed only matches `^from <pkg>` — three indented in-function imports needed an additional pass with a `[[:space:]]+` prefix variant (in `scripts/regression_check.py` and `core/api/routes/health.py`).
+- Also updated `CLAUDE.md` native-mode commands (`uvicorn api.main:app` → `uvicorn core.api.main:app`; `python jobs/worker.py` → `python -m core.jobs.worker`) so the documented dev workflow still works.
+- 6 packages + 25 files moved; 16 files had imports rewritten. Regression: 3/3 PASS.
 
 ---
 

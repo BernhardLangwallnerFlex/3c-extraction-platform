@@ -4,13 +4,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 import structlog
 
-from storage.file_storage import get_file_key
+from core.storage.file_storage import get_file_key
 
-from storage.storage import LocalStorage, S3Storage, AzureBlobStorage
+from core.storage.storage import LocalStorage, S3Storage, AzureBlobStorage
 from invoice import Invoice
 
-from ocr.ocr_dual import DualOCRProcessor
-from processors.azure_processor import AzureInvoiceProcessor
+from core.ocr.ocr_dual import DualOCRProcessor
+from core.processors.azure_processor import AzureInvoiceProcessor
 from core.utils import ensure_json_serializable
 
 load_dotenv()

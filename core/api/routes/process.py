@@ -5,8 +5,8 @@ from redis import Redis
 from redis.exceptions import RedisError
 from rq import Queue, Retry
 
-from jobs.tasks import process_file
-from api.models import ProcessRequest
+from core.jobs.tasks import process_file
+from core.api.models import ProcessRequest
 
 logger = structlog.get_logger()
 router = APIRouter()

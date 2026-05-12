@@ -6,7 +6,7 @@ from redis.exceptions import RedisError
 from rq.job import Job
 from rq.exceptions import NoSuchJobError
 
-from api.models import JobStatusResponse
+from core.api.models import JobStatusResponse
 
 logger = structlog.get_logger()
 router = APIRouter()

@@ -1,7 +1,7 @@
 import os
 import fitz  # PyMuPDF
 import tempfile
-from ocr.base_ocr import BaseOCREngine
+from core.ocr.base_ocr import BaseOCREngine
 from core.utils import encode_image_to_base64, encode_pdf
 from mistralai import Mistral
 

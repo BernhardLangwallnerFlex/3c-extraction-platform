@@ -1,4 +1,4 @@
-from ocr.base_ocr import BaseOCREngine
+from core.ocr.base_ocr import BaseOCREngine
 from google.cloud import vision
 import os
 # from PIL import Image

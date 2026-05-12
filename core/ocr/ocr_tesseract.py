@@ -3,7 +3,7 @@ import pytesseract
 import fitz  # PyMuPDF
 import tempfile
 import os
-from ocr.base_ocr import BaseOCREngine
+from core.ocr.base_ocr import BaseOCREngine
 
 class TesseractOCR(BaseOCREngine):
     def extract_text(self, file_path: str) -> str:

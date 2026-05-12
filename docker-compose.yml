@@ -15,7 +15,7 @@ services:
       STORAGE_BACKEND: "local"
       LOCAL_STORAGE_BASE_DIR: "/app/temp"
       REDIS_URL: "redis://redis:6379/0"
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+    command: uvicorn core.api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
 
   worker:
     build: .
@@ -31,7 +31,7 @@ services:
       STORAGE_BACKEND: "local"
       LOCAL_STORAGE_BASE_DIR: "/app/temp"
       REDIS_URL: "redis://redis:6379/0"
-    command: python jobs/worker.py
+    command: python -m core.jobs.worker
 
   redis:
     image: redis:7

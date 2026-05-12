@@ -3,8 +3,8 @@ import sentry_sdk
 import structlog
 
 from fastapi import FastAPI, Depends
-from api.routes import upload, process, job, health
-from api.dependencies import verify_api_key
+from core.api.routes import upload, process, job, health
+from core.api.dependencies import verify_api_key
 
 # --- Sentry ---
 sentry_dsn = os.getenv("SENTRY_DSN")

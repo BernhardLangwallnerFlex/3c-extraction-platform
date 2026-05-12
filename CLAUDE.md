@@ -20,9 +20,9 @@ python test_api.py               # uploads a PDF and polls until done
 ```bash
 docker compose up redis           # Redis only
 # Terminal 1 — API (auto-reloads on code changes):
-STORAGE_BACKEND=local REDIS_URL=redis://localhost:6379/0 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+STORAGE_BACKEND=local REDIS_URL=redis://localhost:6379/0 uvicorn core.api.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
 # Terminal 2 — Worker (restart manually after code changes):
-STORAGE_BACKEND=local REDIS_URL=redis://localhost:6379/0 python jobs/worker.py
+STORAGE_BACKEND=local REDIS_URL=redis://localhost:6379/0 python -m core.jobs.worker
 # Terminal 3 — Test:
 python test_api.py
 ```

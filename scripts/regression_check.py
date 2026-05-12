@@ -65,8 +65,8 @@ PDF_MODE = {
 
 def run_extraction(pdf_path: Path) -> dict:
     """Save the PDF via the same code path the API uses, then run process_file."""
-    from storage.file_storage import save_upload
-    from jobs.tasks import process_file
+    from core.storage.file_storage import save_upload
+    from core.jobs.tasks import process_file
 
     file_bytes = pdf_path.read_bytes()
     file_id = save_upload(file_bytes, original_filename=pdf_path.name)

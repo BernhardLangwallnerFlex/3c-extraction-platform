@@ -32,7 +32,7 @@ def ready(response: Response):
     storage_backend = os.getenv("STORAGE_BACKEND", "local").lower()
     if storage_backend == "azure":
         try:
-            from storage.storage import AzureBlobStorage
+            from core.storage.storage import AzureBlobStorage
             account_name = os.getenv("AZURE_STORAGE_ACCOUNT_NAME")
             account_key = os.getenv("AZURE_STORAGE_ACCOUNT_KEY")
             if account_name and account_key:

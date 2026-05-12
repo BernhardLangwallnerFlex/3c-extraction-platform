@@ -1,14 +1,14 @@
-from processors.gpt_processor import GPTInvoiceProcessor
-from ocr.ocr_tesseract import TesseractOCR
-from ocr.ocr_mistral import MistralOCR
-from ocr.ocr_googlevision import GoogleOCR
-from ocr.ocr_agentic import OCRAgenticProcessor
+from core.processors.gpt_processor import GPTInvoiceProcessor
+from core.ocr.ocr_tesseract import TesseractOCR
+from core.ocr.ocr_mistral import MistralOCR
+from core.ocr.ocr_googlevision import GoogleOCR
+from core.ocr.ocr_agentic import OCRAgenticProcessor
 from invoice import Invoice
 from dotenv import load_dotenv
 import os
 from pathlib import Path
-from processors.azure_processor import AzureInvoiceProcessor
-from storage.storage import S3Storage, AzureBlobStorage
+from core.processors.azure_processor import AzureInvoiceProcessor
+from core.storage.storage import S3Storage, AzureBlobStorage
 
 # Load API key from .env
 load_dotenv()

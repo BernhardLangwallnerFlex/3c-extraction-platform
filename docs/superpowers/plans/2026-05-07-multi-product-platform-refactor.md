@@ -335,7 +335,7 @@ git commit -m "Move utils.py and config.py into core/ (thin-slice refactor)"
 - Create: `tests/core/__init__.py`
 - Create: `tests/core/test_product.py`
 
-- [ ] **Step 1: Write `core/product.py`**
+- [x] **Step 1: Write `core/product.py`**
 
 ```python
 """Product configuration — the single contract between core and a product."""
@@ -390,7 +390,7 @@ def load_product_config(name: str | None = None) -> ProductConfig:
     return config
 ```
 
-- [ ] **Step 2: Write a smoke test for the loader**
+- [x] **Step 2: Write a smoke test for the loader**
 
 Create `tests/core/test_product.py`:
 
@@ -414,7 +414,7 @@ def test_load_with_explicit_name_only(monkeypatch, tmp_path):
 
 (Add `tests/__init__.py` and `tests/core/__init__.py` if not already present.)
 
-- [ ] **Step 3: Run the test**
+- [x] **Step 3: Run the test**
 
 ```bash
 pip install pytest 2>/dev/null
@@ -423,12 +423,15 @@ python -m pytest tests/core/test_product.py -v
 
 Expected: 2 passed.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add core/product.py tests/__init__.py tests/core/__init__.py tests/core/test_product.py
 git commit -m "Add ProductConfig dataclass and PRODUCT_NAME-based loader"
 ```
+
+**Deviations from plan as executed:**
+- `pytest` installed into the uv-managed `.venv` via `uv pip install pytest` (the plan's `pip install` flag did not apply — the venv is uv-managed). Not added to `requirements*.txt` since the test runner is dev-only and the prod containers do not need it.
 
 ---
 

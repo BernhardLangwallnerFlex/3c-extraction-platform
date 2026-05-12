@@ -446,7 +446,7 @@ Migrates the hardcoded German vet extraction prompt out of `prompt_building/prom
 - Create: `products/vetcostcheck/product.py`
 - Modify: `prompt_building/prompt_building.py` (mark vet-specific functions as deprecated; will be deleted in Task 9)
 
-- [ ] **Step 1: Capture the existing extraction prompt**
+- [x] **Step 1: Capture the existing extraction prompt**
 
 Read `prompt_building/prompt_building.py:get_full_prompt(...)`. It builds a single string by combining a static system prompt, optional OCR text, and optional animal information. Move the body into `products/vetcostcheck/extract_prompt.py`:
 
@@ -473,7 +473,7 @@ def build_extract_prompt(
 
 Open `prompt_building/prompt_building.py` and `get_full_prompt`, copy its full body verbatim into `build_extract_prompt`. The string literal is the contract — do not paraphrase, do not "improve" wording during the move. Byte-identical or the regression check will fail.
 
-- [ ] **Step 2: Capture the extraction schema**
+- [x] **Step 2: Capture the extraction schema**
 
 The existing extraction is described in `configs/extraction_config.json`. Inspect it:
 
@@ -490,7 +490,7 @@ python -c "import json; print(json.load(open('products/vetcostcheck/extract_sche
 
 Expected: schema-shaped keys (e.g. `properties`, `required`, etc., or whatever the existing config uses).
 
-- [ ] **Step 3: Capture the analyze override (the `invoice_animals` field)**
+- [x] **Step 3: Capture the analyze override (the `invoice_animals` field)**
 
 Read `prompt_building/prompt_building.py:build_prompt_for_analyze_document`. If the analyze prompt is already config-driven and generic, no override is needed at this stage and you can skip this file. If it bakes in `invoice_animals` or other vet-only schema fields, copy the full body into:
 
@@ -513,7 +513,7 @@ ANALYZE_OUTPUT_SCHEMA: dict = {
 
 If the analyze prompt is generic (no vet-specific schema fields), set `analyze_prompt_builder=None` and `analyze_output_schema=None` in Task 6 step 4.
 
-- [ ] **Step 4: Write `products/vetcostcheck/product.py`**
+- [x] **Step 4: Write `products/vetcostcheck/product.py`**
 
 ```python
 """vetcostcheck ProductConfig — vet invoice extraction."""
@@ -549,7 +549,7 @@ CONFIG = ProductConfig(
 )
 ```
 
-- [ ] **Step 5: Verify the config loads**
+- [x] **Step 5: Verify the config loads**
 
 ```bash
 PRODUCT_NAME=vetcostcheck python -c "
@@ -561,7 +561,7 @@ print(c.name, type(c.extract_prompt_builder).__name__, list(c.extract_output_sch
 
 Expected: `vetcostcheck function ['<schema-keys>'...]` — no errors.
 
-- [ ] **Step 6: Verify behavior is preserved (no functional swap yet)**
+- [x] **Step 6: Verify behavior is preserved (no functional swap yet)**
 
 The pipeline is still using `prompt_building.get_full_prompt(...)` directly — the swap happens in Task 10. So the regression check should still pass at this stage:
 
@@ -571,12 +571,19 @@ python scripts/regression_check.py
 
 Expected: `[PASS]`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add products/vetcostcheck/
 git commit -m "Add vetcostcheck ProductConfig with migrated prompt and schema"
 ```
+
+**Deviations from plan as executed:**
+- `extract_prompt.py` is byte-identical to `prompt_building.get_full_prompt` (verified by direct string comparison across 4 input shapes including empty/with-animals/with-expected-items).
+- `extract_schema.json` was authored fresh as a clean Draft 2020-12 JSON Schema reflecting the structure embedded in the prompt's `JSON-Ziel-Schema` block. The legacy `configs/extraction_config.json:extraction_fields` (field-description format) does not match the actual output — it was orphaned by `get_full_prompt` and is retired by this migration.
+- `analyze_overrides.py` exports a non-empty `ANALYZE_OUTPUT_SCHEMA` reflecting the analyze output (incl. `invoice_animals` vet-only field), and `build_analyze_prompt` byte-identical to `prompt_building.build_prompt_for_analyze_document`.
+- `product.py` imports `analyze_overrides` directly rather than the plan's try/except ImportError fallback — vetcostcheck always has the override, no reason to defer to runtime.
+- Regression: 3/3 PASS. Pipeline still uses old `prompt_building` import path; functional swap happens in Task 9.
 
 ---
 

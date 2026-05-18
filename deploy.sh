@@ -1,44 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ── Configuration ──────────────────────────────────────────────
+# Usage:
+#   ./deploy.sh <product> [tag]
+#   ./deploy.sh all [tag]
+#
+# Example:
+#   ./deploy.sh vetcostcheck v20260507
+#   ./deploy.sh all v20260507
+
+PRODUCT="${1:?Usage: ./deploy.sh <product|all> [tag]}"
+IMAGE_TAG="${2:-latest}"
+
 RG="rg-3c-invoice"
 ACR_NAME="cr3cinvoice"
-API_APP="ca-invoice-api"
-WORKER_APP="ca-invoice-worker"
-IMAGE_TAG="${1:-latest}"
+PRODUCTS=("vetcostcheck" "bps" "sanierer")
 
-# ── Resolve ACR ────────────────────────────────────────────────
-ACR_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
-IMAGE="${ACR_SERVER}/invoice-app:${IMAGE_TAG}"
+deploy_one() {
+  local product="$1"
+  local tag="$2"
 
-# ── Build remotely in ACR ──────────────────────────────────────
-echo "==> Building image in ACR (tag: ${IMAGE_TAG})..."
-az acr build --registry "$ACR_NAME" --image "invoice-app:${IMAGE_TAG}" .
+  if [[ ! -d "products/${product}" ]]; then
+    echo "ERROR: products/${product}/ does not exist" >&2
+    return 1
+  fi
 
-# ── Update container apps ──────────────────────────────────────
-echo "==> Updating API..."
-az containerapp update \
-  --name "$API_APP" \
-  --resource-group "$RG" \
-  --image "$IMAGE"
+  local acr_server image_repo image
+  acr_server=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
+  image_repo="3cix-${product}"
+  image="${acr_server}/${image_repo}:${tag}"
 
-echo "==> Updating Worker..."
-az containerapp update \
-  --name "$WORKER_APP" \
-  --resource-group "$RG" \
-  --image "$IMAGE"
+  echo "==> [${product}] Building image ${image_repo}:${tag} in ACR..."
+  az acr build \
+    --registry "$ACR_NAME" \
+    --image "${image_repo}:${tag}" \
+    --build-arg "PRODUCT=${product}" \
+    .
 
-# ── Status ─────────────────────────────────────────────────────
+  for kind in api worker; do
+    local app="ca-${kind}-${product}"
+    if ! az containerapp show --name "$app" --resource-group "$RG" >/dev/null 2>&1; then
+      echo "==> [${product}] SKIP: ${app} does not exist yet (run scripts/provision_product.sh ${product} first)"
+      continue
+    fi
+    echo "==> [${product}] Updating ${app}..."
+    az containerapp update --name "$app" --resource-group "$RG" --image "$image"
+  done
+}
+
+if [[ "$PRODUCT" == "all" ]]; then
+  for p in "${PRODUCTS[@]}"; do
+    if [[ -d "products/${p}" ]]; then
+      deploy_one "$p" "$IMAGE_TAG"
+    fi
+  done
+else
+  deploy_one "$PRODUCT" "$IMAGE_TAG"
+fi
+
 echo ""
-echo "==> Active revisions:"
-echo "--- API ---"
-az containerapp revision list --name "$API_APP" --resource-group "$RG" -o table
-echo "--- Worker ---"
-az containerapp revision list --name "$WORKER_APP" --resource-group "$RG" -o table
-
-API_FQDN=$(az containerapp show --name "$API_APP" --resource-group "$RG" \
-  --query "properties.configuration.ingress.fqdn" -o tsv)
-echo ""
-echo "==> API URL: https://${API_FQDN}"
 echo "==> Done."

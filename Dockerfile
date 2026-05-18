@@ -1,5 +1,8 @@
 FROM python:3.11-slim
 
+ARG PRODUCT
+ENV PRODUCT_NAME=${PRODUCT}
+
 # Tesseract OCR for page orientation detection
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr tesseract-ocr-deu \
@@ -10,7 +13,12 @@ WORKDIR /app
 COPY requirements.prod.txt .
 RUN pip install --no-cache-dir -r requirements.prod.txt
 
-COPY . .
+# Shared core
+COPY core/ ./core/
+COPY products/__init__.py ./products/__init__.py
+
+# Product-specific code only — image contains exactly one product
+COPY products/${PRODUCT}/ ./products/${PRODUCT}/
 
 ENV PYTHONPATH="/app:${PYTHONPATH}"
 

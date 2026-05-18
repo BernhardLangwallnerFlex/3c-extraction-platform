@@ -19,7 +19,8 @@ from core.ocr.base_ocr import BaseOCREngine
 from core.utils import extract_json_from_response, strip_ocr_element_ids
 
 log = logging.getLogger(__name__)
-from core.prompt_building.prompt_building import build_prompt_for_analyze_document, get_full_prompt
+from core.prompt_building.prompt_building import build_prompt_for_analyze_document
+from core.product import ProductConfig
 
 from core.storage.storage import StorageBackend, LocalStorage, StorageKey
 
@@ -55,12 +56,14 @@ class Pipeline:
         self,
         file_key: StorageKey,
         ocr_engine: BaseOCREngine,
+        product_config: ProductConfig,
         storage: StorageBackend | None = None,
         work_dir: Path | None = None,
         output_prefix: str = "temp",  # where to put subdocs + outputs within the storage
     ):
         self.file_key = file_key
         self.ocr_engine = ocr_engine
+        self.product_config = product_config
         self.storage = storage or LocalStorage()
         self.output_prefix = output_prefix
 
@@ -165,10 +168,14 @@ class Pipeline:
         )
 
     def analyze_document(self):
-        prompt = build_prompt_for_analyze_document(
-            config_path="configs/extraction_config.json",
-            markdown_text=self.markdown_with_pages_numbers,
-        )
+        if self.product_config.analyze_prompt_builder is not None:
+            prompt = self.product_config.analyze_prompt_builder(
+                markdown_text=self.markdown_with_pages_numbers,
+            )
+        else:
+            prompt = build_prompt_for_analyze_document(
+                markdown_text=self.markdown_with_pages_numbers,
+            )
 
         # Build multimodal content: text prompt + one low-res image per page
         content_blocks = [{"type": "text", "text": prompt}]
@@ -299,7 +306,7 @@ class Pipeline:
             use_ocr=True,
             use_vision=True,
             markdown_text=subdoc.markdown,
-            prompt=get_full_prompt(
+            prompt=self.product_config.extract_prompt_builder(
                 ocr_text=ocr_text,
                 animal_information=animal_info,
                 expected_items=expected_items,

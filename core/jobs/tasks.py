@@ -8,6 +8,7 @@ from core.storage.file_storage import get_file_key
 
 from core.storage.storage import LocalStorage, S3Storage, AzureBlobStorage
 from core.pipeline import Pipeline
+from core.product import load_product_config
 
 from core.ocr.ocr_dual import DualOCRProcessor
 from core.processors.azure_processor import AzureInvoiceProcessor
@@ -69,6 +70,9 @@ def process_file(file_id: str):
     log.info("job_started", file_id=file_id)
 
     try:
+        product_config = load_product_config()
+        log.info("product_loaded", product=product_config.name)
+
         file_key = get_file_key(file_id)
         storage = _build_storage()
 
@@ -95,6 +99,7 @@ def process_file(file_id: str):
         invoice = Pipeline(
             file_key=file_key,
             ocr_engine=dual_ocr_engine,
+            product_config=product_config,
             storage=storage,
             output_prefix=output_prefix,
         )

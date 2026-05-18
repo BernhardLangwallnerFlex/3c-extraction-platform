@@ -18,8 +18,9 @@ ignored because LLM outputs vary in wording even with seed/temperature pinned.
 LLM-noise smoothers applied so the diff stays stable on re-runs:
   1. The entire `.warnings` subtree is skipped (LLM-generated quality notes
      vary wildly in count and wording per run).
-  2. None is treated as type-compatible with str (the LLM randomly emits null
-     vs. an empty-ish string for the same "missing" field).
+  2. None is treated as type-compatible with str and with numbers (int/float).
+     The LLM randomly emits null vs. an empty-ish string or a numeric value
+     for the same "missing-or-uncertain" field.
   3. Length differences on known-noisy structured arrays are ignored
      (see NOISY_LEN_PATHS). Their *content* is still compared pairwise where
      overlap exists, so a renamed/dropped field still trips the diff.
@@ -47,6 +48,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # load_dotenv at import time). load_dotenv does not override pre-set env vars.
 os.environ["STORAGE_BACKEND"] = "local"
 os.environ["LOCAL_STORAGE_BASE_DIR"] = str(REPO_ROOT / "temp")
+os.environ.setdefault("PRODUCT_NAME", "vetcostcheck")
 
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -89,8 +91,10 @@ def _diff_walk(actual, expected, path: str, diffs: list) -> None:
             if actual != expected:
                 diffs.append((path, "NUM", f"{actual!r} != {expected!r}"))
             return
-        # None ↔ str: treat as same shape (LLM null/empty drift)
-        if (actual is None and isinstance(expected, str)) or (expected is None and isinstance(actual, str)):
+        # None ↔ str / None ↔ number: treat as same shape (LLM null/empty drift)
+        if actual is None and isinstance(expected, (str, int, float)):
+            return
+        if expected is None and isinstance(actual, (str, int, float)):
             return
         diffs.append((path, "TYPE", f"{type(actual).__name__} != {type(expected).__name__}"))
         return

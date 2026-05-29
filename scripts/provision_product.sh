@@ -21,7 +21,7 @@ set -euo pipefail
 #
 # Optional env:
 #   INVOICE_API_KEY                 — generated if unset
-#   SENTRY_DSN                      — defaults to empty
+#   SENTRY_DSN                      — Sentry disabled if unset (secret/env omitted)
 
 PRODUCT="${1:?Usage: scripts/provision_product.sh <product> <image-tag>}"
 IMAGE_TAG="${2:?Usage: scripts/provision_product.sh <product> <image-tag>}"
@@ -59,6 +59,18 @@ fi
 INVOICE_API_KEY="${INVOICE_API_KEY:-$(openssl rand -hex 32)}"
 SENTRY_DSN="${SENTRY_DSN:-}"
 
+# Sentry is optional. Azure Container Apps rejects empty secret values, and the
+# app (core/api/main.py, core/jobs/worker.py) only calls sentry_sdk.init when
+# SENTRY_DSN is non-empty. So wire the sentry secret + env var only when set.
+# Empty-array expansion below uses the bash 3.2-safe idiom ${arr[@]+"${arr[@]}"}
+# (no outer quotes — an empty array must yield zero args, not one empty string).
+SENTRY_SECRET_ARG=()
+SENTRY_ENV_ARG=()
+if [[ -n "$SENTRY_DSN" ]]; then
+  SENTRY_SECRET_ARG=(sentry-dsn="$SENTRY_DSN")
+  SENTRY_ENV_ARG=(SENTRY_DSN=secretref:sentry-dsn)
+fi
+
 # Per-product Azure Blob prefixes (matches existing convention: blob container "invoices")
 AZURE_INPUT_PREFIX="az://invoices/uploads-${PRODUCT}/"
 AZURE_OUTPUT_PREFIX="az://invoices/processed-${PRODUCT}/"
@@ -90,7 +102,7 @@ az containerapp create \
     mistral-api-key="$MISTRAL_API_KEY" \
     azure-docintel-key="$AZURE_DOCINTEL_KEY" \
     invoice-api-key="$INVOICE_API_KEY" \
-    sentry-dsn="$SENTRY_DSN" \
+    ${SENTRY_SECRET_ARG[@]+"${SENTRY_SECRET_ARG[@]}"} \
   --env-vars \
     PRODUCT_NAME="$PRODUCT" \
     RQ_QUEUE_NAME="$QUEUE_NAME" \
@@ -107,7 +119,7 @@ az containerapp create \
     AZURE_DOCINTEL_KEY=secretref:azure-docintel-key \
     REDIS_URL=secretref:redis-url \
     INVOICE_API_KEY=secretref:invoice-api-key \
-    SENTRY_DSN=secretref:sentry-dsn
+    ${SENTRY_ENV_ARG[@]+"${SENTRY_ENV_ARG[@]}"}
 
 # --- Provision Worker ---
 echo "==> Creating ${WORKER_APP}..."
@@ -129,7 +141,7 @@ az containerapp create \
     azure-openai-key="$AZURE_OPENAI_KEY" \
     mistral-api-key="$MISTRAL_API_KEY" \
     azure-docintel-key="$AZURE_DOCINTEL_KEY" \
-    sentry-dsn="$SENTRY_DSN" \
+    ${SENTRY_SECRET_ARG[@]+"${SENTRY_SECRET_ARG[@]}"} \
   --env-vars \
     PRODUCT_NAME="$PRODUCT" \
     RQ_QUEUE_NAME="$QUEUE_NAME" \
@@ -146,7 +158,7 @@ az containerapp create \
     AZURE_DOCINTEL_KEY=secretref:azure-docintel-key \
     REDIS_URL=secretref:redis-url \
     KEDA_REDIS_HOST="$KEDA_REDIS_HOST" \
-    SENTRY_DSN=secretref:sentry-dsn
+    ${SENTRY_ENV_ARG[@]+"${SENTRY_ENV_ARG[@]}"}
 
 # --- KEDA scaler on Redis queue length ---
 # Matches production (ca-invoice-worker): plain KEDA_REDIS_HOST env var + redis-password secret.

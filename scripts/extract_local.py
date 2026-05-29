@@ -13,6 +13,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+# Route the pipeline's structlog output to stderr so stdout carries only the
+# extraction JSON (usable as `... | tee out.json`). core defaults to a
+# PrintLoggerFactory on stdout, which would otherwise corrupt the JSON.
+import structlog  # noqa: E402
+
+structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
+
 
 def main() -> int:
     if len(sys.argv) != 2:

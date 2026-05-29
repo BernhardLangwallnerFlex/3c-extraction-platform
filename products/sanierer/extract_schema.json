@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sanierer extraction output",
+  "description": "Items-focused Beleg data extracted from a single Sanierer (Schadensanierung) sub-document. Header/party data is intentionally omitted (it comes from the Auftrag). Documentation + future validation target; not enforced against the LLM output at runtime. Wrapped by the pipeline in {number_of_subdocuments, subdocuments[]}.",
+  "type": "object",
+  "properties": {
+    "type": {"type": ["string", "null"], "enum": ["invoice", "quote", null], "description": "Belegart: invoice=Rechnung, quote=Angebot"},
+    "currency": {"type": ["string", "null"], "description": "ISO 4217 code, e.g. EUR"},
+    "number": {"type": ["string", "null"], "description": "Belegnummer (Angebots-/Rechnungsnummer)"},
+    "issuedAt": {"type": ["string", "null"], "description": "Belegdatum, YYYY-MM-DD"},
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "position": {"type": ["string", "null"], "description": "document running position, e.g. 05.01.001."},
+          "lvPosition": {"type": ["string", "null"], "description": "Leistungsverzeichnis reference, e.g. 05.04.001"},
+          "name": {"type": ["string", "null"], "description": "Beschreibung (full position text)"},
+          "qty": {"type": ["number", "null"], "description": "Menge (may be fractional for % positions)"},
+          "unit": {"type": ["string", "null"], "description": "ME raw text, e.g. M2, ST, H, %"},
+          "unitCode": {"type": "integer", "minimum": 0, "maximum": 30, "description": "0-30 enum; default 0 (PIECE)"},
+          "unitPriceNet": {"type": ["number", "null"], "description": "Einzelpreis"},
+          "lineTotalNet": {"type": ["number", "null"], "description": "Gesamtpreis (negative for Rabatt lines)"},
+          "taxRate": {"type": ["number", "null"], "description": "per-line MwSt % (usually null)"},
+          "discount": {"type": ["number", "null"], "description": "per-line Rabatt/Skonto (usually null)"},
+          "source": {"type": "object", "properties": {"snippet": {"type": "string"}}}
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "properties": {
+        "net": {"type": ["number", "null"]},
+        "tax": {"type": "object", "properties": {"rate": {"type": ["number", "null"]}, "amount": {"type": ["number", "null"]}}},
+        "gross": {"type": ["number", "null"]},
+        "discount": {"type": ["number", "null"]}
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  }
+}

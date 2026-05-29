@@ -119,7 +119,7 @@ az containerapp create \
   --registry-server "$ACR_SERVER" \
   --registry-username "$ACR_NAME" \
   --registry-password "$ACR_PASS" \
-  --command "python" --args "-m" "core.jobs.worker" \
+  --command "python" --args "core/jobs/worker.py" \
   --cpu 2.0 --memory 4.0Gi \
   --min-replicas 0 --max-replicas 5 \
   --secrets \

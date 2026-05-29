@@ -1,4 +1,5 @@
 import base64
+import os
 from PIL import Image
 import re
 import json
@@ -177,6 +178,19 @@ def convert_file_to_images(file_path: str) -> list:
                 temp_img_path = tempfile.mktemp(suffix=f"_{i}.png")
                 pix.save(temp_img_path)
                 images.append(temp_img_path)
+                if os.getenv("DEBUG_RENDER"):
+                    # Temporary diagnostic: a degraded/blank render shows near-uniform
+                    # pixels (low stddev). Gated by DEBUG_RENDER; off in normal runs.
+                    try:
+                        from PIL import ImageStat
+                        with Image.open(temp_img_path).convert("L") as _im:
+                            _st = ImageStat.Stat(_im)
+                            structlog.get_logger().info(
+                                "debug_render_page", page=i, w=pix.width, h=pix.height,
+                                px_mean=round(_st.mean[0], 2), px_stddev=round(_st.stddev[0], 2),
+                            )
+                    except Exception as _e:  # noqa: BLE001
+                        structlog.get_logger().info("debug_render_err", page=i, err=str(_e))
     else:
         raise ValueError("Unsupported file format for direct vision input.")
 

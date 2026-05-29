@@ -1,6 +1,7 @@
 from openai import AzureOpenAI
 from core.utils import convert_file_to_images, extract_json_from_response, log_retry
 import base64
+import os
 from core.prompt_building.prompt_building import build_prompt_from_config
 import json
 import re
@@ -82,8 +83,19 @@ class AzureInvoiceProcessor:
         content_blocks = [{"type": "text", "text": prompt}]
 
         if use_vision:
-            images = convert_file_to_images(img_file_path)      
+            images = convert_file_to_images(img_file_path)
             for img_path in images:
+                if os.getenv("DEBUG_EXTRACT"):
+                    try:
+                        from PIL import Image as _Img, ImageStat as _Stat
+                        import os as _os
+                        with _Img.open(img_path).convert("L") as _im:
+                            _st = _Stat.Stat(_im)
+                            log.info("debug_image_sent", path=img_path, w=_im.width, h=_im.height,
+                                     bytes=_os.path.getsize(img_path),
+                                     px_mean=round(_st.mean[0], 2), px_stddev=round(_st.stddev[0], 2))
+                    except Exception as _e:  # noqa: BLE001
+                        log.info("debug_image_err", err=str(_e))
                 with open(img_path, "rb") as f:
                     b64 = base64.b64encode(f.read()).decode("utf-8")
                     content_blocks.append({
@@ -112,6 +124,18 @@ class AzureInvoiceProcessor:
             completion_tokens=completion_tokens,
             cost_usd=round(cost, 6),
         )
+
+        if os.getenv("DEBUG_EXTRACT"):
+            _raw = response.choices[0].message.content or ""
+            log.info(
+                "debug_extract",
+                use_vision=use_vision,
+                num_images=(len(content_blocks) - 1),
+                raw_len=len(_raw),
+                has_position=('"position"' in _raw),
+                has_lvposition=('"lvPosition"' in _raw),
+                raw_head=_raw[:240],
+            )
 
         json_result = extract_json_from_response(response.choices[0].message.content)
         return json_result

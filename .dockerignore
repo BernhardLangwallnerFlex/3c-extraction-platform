@@ -1,0 +1,34 @@
+# Build context is uploaded to ACR on every `az acr build`. The Dockerfile only
+# needs requirements.prod.txt, core/, and products/, so exclude everything heavy.
+
+# Virtualenv / caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local processing artifacts and test data
+temp/
+files/
+3C_testdaten_pdf/
+3C_testdaten_jpg/
+3C_testdaten_json/
+3C_testdaten_md/
+old/
+benchmarks/
+notebooks/
+
+# Repo metadata / docs / dev-only
+.git/
+.github/
+docs/
+tests/
+*.md
+.env
+.env.example
+.DS_Store
+
+# Dev-only requirements (prod uses requirements.prod.txt)
+requirements.txt

@@ -19,6 +19,6 @@ def test_vetcostcheck_config_loads(monkeypatch):
 def test_vetcostcheck_extract_prompt_builds_string(monkeypatch):
     monkeypatch.setenv("PRODUCT_NAME", "vetcostcheck")
     config = load_product_config()
-    prompt = config.extract_prompt_builder(ocr_text="dummy ocr", animal_information={})
+    prompt = config.extract_prompt_builder(ocr_text="dummy ocr", subdocument_context={})
     assert isinstance(prompt, str)
     assert len(prompt) > 100  # the vet prompt is long; sanity check

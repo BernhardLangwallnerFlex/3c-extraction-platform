@@ -1,9 +1,10 @@
 """Vet-specific analyze prompt + schema overrides.
 
-The vet analyze stage adds an `invoice_animals` field that isn't generic — it
-maps each detected sub-invoice to the list of animals (with species/breed/etc.)
-appearing on it. Other products will define their own analyze override or rely
-on the generic core-level analyze prompt.
+The vet analyze stage adds a `subdocument_context` field that isn't generic —
+it maps each detected sub-invoice to the list of animals (with
+species/breed/etc.) appearing on it. A global fallback list is stored under
+`subdocument_context_global`. Other products will define their own analyze
+override or rely on the generic core-level analyze prompt.
 
 Captured verbatim from configs/extraction_config.json:analysis_prompt at the
 time of the multi-product refactor.
@@ -29,14 +30,14 @@ _ANALYZE_PROMPT_TEMPLATE = (
     "Frage 2: Wie viele unabhängige Rechnungen enthält das Dokument? Ouput: 'number_of_invoices': <number>.\n"
     "Frage 3: Welche Seiten gehören zu welcher Rechnung? Output: 'invoice_pages': <invoice_number>: <list of page numbers>, ... \n"
     "Frage 4: Wie viele Leistungen (z.B. Behandlungen oder Medikamente, die abgerechnet werden) befinden sich auf jeder Rechnung (meist sind das Zeilen in einer Tabelle)? Output: 'invoice_number_of_items': <invoice_number>: <number of items on invoice>, ...\n"
-    "Frage 5: Welche Tiere werden genannt und welcher Spezies (z.B. Hund, Katze, etc.) bzw. Rasse (z.B. Labrador, Bulldog, etc.) gehören sie an? Dazu noch Informationen wie Geburtsdatum, Geschlecht, Chip-ID, Diagnose, etc. so weit vorhanden. Output als Liste von Dictionaries: 'animals': [{{'name': str, 'species': str, 'breed': str, 'birthDate': str, 'gender': str, 'chipId': str, 'diagnosis': str}}, {{'name': str,...}},...] und so weiter, falls es mehrere Tiere gibt.\n"
-    "Frage 6: Welche Tiere gehören zu welcher Rechnung? Output: 'invoice_animals': {{<invoice_number>: [<liste der Tiere als Dictionaries wie in Frage 5>], ...}}. Wenn eine Rechnung kein Tier enthält, soll die Liste leer sein. Weise Tiere NUR den Rechnungen zu, auf denen sie tatsächlich erwähnt werden.\n"
+    "Frage 5: Welche Tiere werden genannt und welcher Spezies (z.B. Hund, Katze, etc.) bzw. Rasse (z.B. Labrador, Bulldog, etc.) gehören sie an? Dazu noch Informationen wie Geburtsdatum, Geschlecht, Chip-ID, Diagnose, etc. so weit vorhanden. Output als Liste von Dictionaries: 'subdocument_context_global': [{{'name': str, 'species': str, 'breed': str, 'birthDate': str, 'gender': str, 'chipId': str, 'diagnosis': str}}, {{'name': str,...}},...] und so weiter, falls es mehrere Tiere gibt.\n"
+    "Frage 6: Welche Tiere gehören zu welcher Rechnung? Output: 'subdocument_context': {{<invoice_number>: [<liste der Tiere als Dictionaries wie in Frage 5>], ...}}. Wenn eine Rechnung kein Tier enthält, soll die Liste leer sein. Weise Tiere NUR den Rechnungen zu, auf denen sie tatsächlich erwähnt werden.\n"
     "\n Hier ist das Dokument im Markdown-Format: {markdown_text} "
 )
 
 
 def build_analyze_prompt(*, markdown_text: str = "") -> str:
-    """Build the vet analyze prompt. Adds invoice_animals to the per-subdocument output.
+    """Build the vet analyze prompt. Adds subdocument_context to the per-subdocument output.
 
     Body migrated verbatim from prompt_building.build_prompt_for_analyze_document,
     which read the same string from configs/extraction_config.json:analysis_prompt.
@@ -47,7 +48,7 @@ def build_analyze_prompt(*, markdown_text: str = "") -> str:
 ANALYZE_OUTPUT_SCHEMA: dict = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "Vetcostcheck analyze output",
-    "description": "Vet-specific splitting/analysis output. The invoice_animals field is the vet-only override; everything else is generic and could be moved to core later.",
+    "description": "Vet-specific splitting/analysis output. The subdocument_context field is the vet-only override; everything else is generic and could be moved to core later.",
     "type": "object",
     "properties": {
         "pages_with_invoice_information": {
@@ -65,7 +66,7 @@ ANALYZE_OUTPUT_SCHEMA: dict = {
             "description": "Map of <invoice_number> (str) -> count of items on that invoice",
             "additionalProperties": {"type": "integer"},
         },
-        "animals": {
+        "subdocument_context_global": {
             "type": "array",
             "items": {
                 "type": "object",
@@ -80,9 +81,9 @@ ANALYZE_OUTPUT_SCHEMA: dict = {
                 },
             },
         },
-        "invoice_animals": {
+        "subdocument_context": {
             "type": "object",
-            "description": "Vet-specific: map of <invoice_number> (str) -> list of animal dicts (same shape as `animals`).",
+            "description": "Map of <invoice_number> (str) -> list of animal dicts (per-subdocument context).",
             "additionalProperties": {
                 "type": "array",
                 "items": {"type": "object"},

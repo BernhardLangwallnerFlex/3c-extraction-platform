@@ -14,14 +14,14 @@ class GPTInvoiceProcessor:
         self.vision_model = vision_model
 
 
-    def extract(self, img_file_path: str, use_ocr=True, use_vision=True, markdown_text="", prompt="", animal_information={}) -> str:
+    def extract(self, img_file_path: str, use_ocr=True, use_vision=True, markdown_text="", prompt="", subdocument_context={}) -> str:
         if use_ocr and markdown_text == "":
             raise ValueError("Not enough markdown text information to extract data from document.")
         if use_vision and not self.vision_model:
             raise ValueError("No vision model configured")
 
         if prompt == "":
-            prompt = build_prompt_from_config("configs/extraction_config.json", use_ocr=use_ocr, use_vision=use_vision, ocr_text=markdown_text, animal_information=animal_information)
+            prompt = build_prompt_from_config("configs/extraction_config.json", use_ocr=use_ocr, use_vision=use_vision, ocr_text=markdown_text, animal_information=subdocument_context)
 
         content_blocks = [{"type": "text", "text": prompt}]
 

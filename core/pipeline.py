@@ -211,7 +211,7 @@ class Pipeline:
             raise ValueError("split_document_into_invoices currently expects a PDF input.")
 
         # Map LLM invoice keys (may be invoice numbers like "73980/25-024544BP")
-        # to sequential document numbers and preserve the mapping for invoice_animals lookup
+        # to sequential document numbers and preserve the mapping for subdocument_context lookup
         self._invoice_key_to_doc_number = {}
 
         with fitz.open(self.local_input_path) as doc:
@@ -282,16 +282,19 @@ class Pipeline:
         doc_num_to_key = {v: k for k, v in getattr(self, '_invoice_key_to_doc_number', {}).items()}
         invoice_key = doc_num_to_key.get(subdoc.document_number)
 
-        # Use per-invoice animals if available, fall back to global list
-        invoice_animals = self.analysis_dict.get("invoice_animals", {})
-        animal_info = None
-        if invoice_animals:
-            if invoice_key and invoice_key in invoice_animals:
-                animal_info = invoice_animals[invoice_key]
-            elif str(subdoc.document_number) in invoice_animals:
-                animal_info = invoice_animals[str(subdoc.document_number)]
-        if animal_info is None:
-            animal_info = self.analysis_dict.get("animals")
+        # Per-subdocument context produced by the product's analyze override
+        # (e.g. vetcostcheck fills it with the animals on each sub-invoice; BPS
+        # leaves it absent). Core is domain-agnostic — it only slices the map by
+        # document key and falls back to a global blob.
+        subdocument_context_map = self.analysis_dict.get("subdocument_context", {})
+        subdocument_context = None
+        if subdocument_context_map:
+            if invoice_key and invoice_key in subdocument_context_map:
+                subdocument_context = subdocument_context_map[invoice_key]
+            elif str(subdoc.document_number) in subdocument_context_map:
+                subdocument_context = subdocument_context_map[str(subdoc.document_number)]
+        if subdocument_context is None:
+            subdocument_context = self.analysis_dict.get("subdocument_context_global")
 
         # Look up expected item count from analysis step
         item_counts = self.analysis_dict.get("invoice_number_of_items", {})
@@ -308,10 +311,10 @@ class Pipeline:
             markdown_text=subdoc.markdown,
             prompt=self.product_config.extract_prompt_builder(
                 ocr_text=ocr_text,
-                animal_information=animal_info,
+                subdocument_context=subdocument_context,
                 expected_items=expected_items,
             ),
-            animal_information=animal_info,
+            subdocument_context=subdocument_context,
         )
 
     def extract_data_from_subdocuments(self, processor):

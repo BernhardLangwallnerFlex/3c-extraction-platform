@@ -56,18 +56,18 @@ class AzureInvoiceProcessor:
         self.api_version = api_version
 
 
-    def extract(self, img_file_path: str, use_ocr=True, use_vision=True, markdown_text="", prompt="", animal_information={}) -> str:
+    def extract(self, img_file_path: str, use_ocr=True, use_vision=True, markdown_text="", prompt="", subdocument_context={}) -> str:
         """
         Extract invoice data from an image file using Azure OpenAI.
-        
+
         Args:
             img_file_path: Path to the image file (JPG, PNG, or PDF)
             use_ocr: Whether to use OCR text in the prompt
             use_vision: Whether to include images in the vision API call
             markdown_text: OCR-extracted markdown text
             prompt: Custom prompt (if empty, will be built from config)
-            animal_information: Additional context information
-            
+            subdocument_context: Optional per-subdocument context (product-specific)
+
         Returns:
             JSON string containing extracted invoice data
         """
@@ -77,7 +77,7 @@ class AzureInvoiceProcessor:
             raise ValueError("No vision model configured")
 
         if prompt == "":
-            prompt = build_prompt_from_config("configs/extraction_config.json", use_ocr=use_ocr, use_vision=use_vision, ocr_text=markdown_text, animal_information=animal_information)
+            prompt = build_prompt_from_config("configs/extraction_config.json", use_ocr=use_ocr, use_vision=use_vision, ocr_text=markdown_text, animal_information=subdocument_context)
 
         content_blocks = [{"type": "text", "text": prompt}]
 

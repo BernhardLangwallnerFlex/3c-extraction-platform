@@ -5,19 +5,20 @@ from __future__ import annotations
 def build_extract_prompt(
     *,
     ocr_text: str = "",
-    animal_information: list[dict] | None = None,
+    subdocument_context: list[dict] | None = None,
     expected_items: int | None = None,
 ) -> str:
     """Build the extraction prompt for a single vet sub-invoice.
 
-    Signature matches the existing get_full_prompt(...) so the migration is
-    behavior-preserving. The prompt body is copied verbatim — do not paraphrase.
+    `subdocument_context` carries the per-invoice animals detected during the
+    analyze stage (formerly `animal_information`). The prompt body is copied
+    verbatim from get_full_prompt(...) — do not paraphrase.
     """
-    if animal_information:
+    if subdocument_context:
         animals_section = "\n".join([f"{animal['name']} (Tierart: {animal['species']}, Rasse: {animal['breed']})"
                                     if animal['breed'] != ""
                                     else f"{animal['name']} (Tierart: {animal['species']})"
-                                    for animal in animal_information])
+                                    for animal in subdocument_context])
         animals_section = f"Die folgenden Tiere werden in der Rechnung oder Quittung erwähnt: {animals_section}. Diese Information ist wichtig für die Extrahierung der Leistungen auf der Rechnung oder Quittung."
     else:
         animals_section = ""

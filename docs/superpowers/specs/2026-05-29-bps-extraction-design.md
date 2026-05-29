@@ -55,8 +55,20 @@ The shared `core.pipeline.Pipeline` runs unchanged: OCR → `analyze_document()`
 These come from how `core/pipeline.py` consumes the product config — violating them breaks the splitter:
 
 1. **Analyze output keys are fixed.** The pipeline splits on `analysis_dict["invoice_pages"]` (pipeline.py:218) and reads `invoice_number_of_items` (pipeline.py:297). BPS's analyze prompt therefore emits the **same JSON keys as vet**: `pages_with_invoice_information`, `number_of_invoices`, `invoice_pages`, `invoice_number_of_items`. Only the prompt *wording* is BPS-specific. `invoice_animals` is simply omitted — the pipeline defaults gracefully (pipeline.py:286–294).
-   - Naming note: the keys keep the literal word "invoice" for core compatibility even though BPS calls them "Belege". This is intentional; do not rename without changing core.
-2. **Extract builder signature is fixed.** The pipeline calls the extract builder with `ocr_text=`, `animal_information=`, and `expected_items=` (pipeline.py:308–314). BPS's `build_extract_prompt(*, ocr_text="", animal_information=None, expected_items=None)` must **accept `animal_information` and ignore it**.
+   - Naming note: the split keys keep the literal word "invoice" for core compatibility even though BPS calls them "Belege". This is intentional; do not rename without changing core. (The one key being generalized — `invoice_animals` → `subdocument_context` — is covered by §3.2.) BPS simply omits `subdocument_context`; the pipeline defaults gracefully.
+2. **Extract builder signature is fixed.** The pipeline calls every product's extract builder with `ocr_text=`, `subdocument_context=`, and `expected_items=` (pipeline.py:308–314, after the §3.2 refactor renames the former vet-specific `animal_information`). BPS's `build_extract_prompt(*, ocr_text="", subdocument_context=None, expected_items=None)` accepts `subdocument_context` and ignores it (BPS produces no per-subdocument context).
+
+### 3.2 Prerequisite refactor: harmonize `animal_information` → `subdocument_context`
+
+Before BPS is wired in, generalize the vet-specific `animal_information` seam so `core/` is domain-neutral. This is a behavior-preserving refactor guarded by the vetcostcheck regression check, landing as the **first task of the BPS implementation plan**. Chosen depth: full generic seam.
+
+- **Analyze contract:** core reads a generic per-subdocument context map from the analyze output under the key `subdocument_context` (`{<doc_key>: <product-specific blob>}`), replacing the hardcoded `invoice_animals` / `animals` reads in `core/pipeline.py:286–294`.
+- **Pipeline → builder/processor:** rename the two `animal_information=` kwargs (pipeline.py:311, 314) to `subdocument_context=`.
+- **Processors:** rename the `animal_information` param in `core/processors/{azure,gpt}_processor.py` to `subdocument_context` (vestigial — only the legacy `build_prompt_from_config` fallback consumes it, and the pipeline always passes a built `prompt=`, so that path never runs in production).
+- **vetcostcheck:** rename `build_extract_prompt`'s `animal_information` param to `subdocument_context` (internal "Tiere…" section logic unchanged), and rename the analyze override's output key `invoice_animals` → `subdocument_context`.
+- **Result:** core names no domain entities. vet fills `subdocument_context` with its per-invoice animals; BPS leaves it absent.
+
+Regression: vet output must be byte-stable across the refactor (the key rename is internal to the analyze→extract handoff, never client-facing).
 
 ## 4. Output schema (per sub-document)
 
@@ -182,17 +194,17 @@ From the Erfassungsmaske. `unit` carries the raw/canonical string; `unitCode` ca
 `products/bps/analyze_overrides.py` adapts the vet analyze prompt:
 
 - **Retermed for BPS:** "Belegprüfung Sach", Belege/Angebot/Rechnung, Handwerker — instead of Tierarzt/Rechnung-only.
-- **Animal questions removed** (vet Q5/Q6). No `invoice_animals` in the output.
+- **Animal questions removed** (vet Q5/Q6). BPS produces no `subdocument_context` (the generic key from §3.2) — it is simply absent from the analyze output.
 - **Email/cover-page rule added:** pages that are only a forwarding email / cover message are **not** independent Belege; they attach to the Beleg they accompany (or to none). The email's subject/Betreff may carry Schadenort and the claim reference — usable as context but not a Beleg.
 - **Boundary rules kept from vet:** different Beleg numbers ⇒ separate Belege; payment-terminal / privacy-notice pages are not their own Belege; use page images to spot different letterheads/layouts.
 - **Output keys (unchanged from vet, for core compatibility):** `pages_with_invoice_information`, `number_of_invoices`, `invoice_pages`, `invoice_number_of_items`.
 
-`ANALYZE_OUTPUT_SCHEMA` documents those four keys (no `invoice_animals`).
+`ANALYZE_OUTPUT_SCHEMA` documents those four keys (no `subdocument_context`).
 
 ## 6. Validation & testing
 
 - **Local prompt iteration (native mode) before any Azure provisioning.** Run the pipeline against all seven `BPS_*.pdf` samples with `STORAGE_BACKEND=local` and tune `extract_prompt.py` / `analyze_overrides.py` until output is correct. Spot-check: multi-Beleg splitting, email-page skipping, Schadenort vs Rechnungsanschrift divergence (e.g. `BPS_2.pdf`: damage at Irene Seeger/Ettlingen, invoice to Volker Steinbach/Leinfelden), unit mapping, totals arithmetic.
-- **Unit tests** mirroring `tests/products/vetcostcheck/test_smoke.py`: config loads, `extract_prompt_builder` is callable and produces a long string, schema parses, `build_extract_prompt` accepts and ignores `animal_information`.
+- **Unit tests** mirroring `tests/products/vetcostcheck/test_smoke.py`: config loads, `extract_prompt_builder` is callable and produces a long string, schema parses, `build_extract_prompt` accepts and ignores `subdocument_context`.
 - **Deploy + e2e** only once local output looks right: `./deploy.sh bps <tag>` → `scripts/provision_product.sh bps <tag>` → `test_api.py` against `ca-api-bps` (a fresh per-product `INVOICE_API_KEY` is fine here — no existing client contract to preserve, unlike vetcostcheck).
 
 ## 7. Open questions / risks
@@ -201,3 +213,5 @@ From the Erfassungsmaske. `unit` carries the raw/canonical string; `unitCode` ca
 - **Dienstleister vs Belegersteller in practice.** Modeled as two parties; samples seen so far have them identical. If iteration shows they're never distinct in real BPS docs, `serviceProvider` can be dropped in a later revision (cheap, additive change).
 - **Per-line `taxRate` / `discount`.** Included for completeness; most Belege carry tax/discount only at the totals level. Expected to be `null` on most lines.
 - **`BPS_3.pdf` is 7.7 MB** — likely many scanned pages; a good stress test for OCR + splitting.
+- **Belegart values.** Only `invoice` (Rechnung) and `quote` (Angebot) are known to occur; no further values are documented. Working with these for now — additional types (Lieferschein, Gutschrift, Kostenvoranschlag, …) can be added if real docs surface them.
+- **Schadennummer / claim reference deferred.** The cover email carries a claim number (e.g. `S12754-…`), but per the Erfassungsmaske, insurance details come from the Auftrag, not the Beleg. We do **not** extract it for now. This is explicitly subject to validation by the domain experts during testing — if they need the Beleg's claim reference as a linking key, it's an additive field.

@@ -1427,7 +1427,7 @@ The existing `ca-invoice-api` and `ca-invoice-worker` keep running. The new `ca-
 
 **Files:** none (deployment-only step)
 
-- [ ] **Step 1: Tag and push the first product image**
+- [x] **Step 1: Tag and push the first product image**
 
 ```bash
 TAG="v$(date +%Y%m%d)a"
@@ -1436,7 +1436,7 @@ TAG="v$(date +%Y%m%d)a"
 
 Expected: image `cr3cinvoice.azurecr.io/3cix-vetcostcheck:vYYYYMMDDa` lands in ACR. The Container App update steps SKIP because the apps don't exist yet — that's fine.
 
-- [ ] **Step 2: Provision the new apps**
+- [x] **Step 2: Provision the new apps**
 
 Source the production secrets into your shell (don't echo them). The simplest way is to run from your existing `.env`:
 
@@ -1448,7 +1448,7 @@ scripts/provision_product.sh vetcostcheck "$TAG"
 
 Expected: both `ca-api-vetcostcheck` and `ca-worker-vetcostcheck` are created. Capture the API FQDN from the script's output.
 
-- [ ] **Step 3: Verify the new API**
+- [x] **Step 3: Verify the new API**
 
 ```bash
 API_FQDN=$(az containerapp show --name ca-api-vetcostcheck --resource-group rg-3c-invoice \
@@ -1459,7 +1459,7 @@ curl -s "https://${API_FQDN}/ready"
 
 Expected: `{"status":"ok"}` for `/healthz`. `/ready` should report `redis: ok` and `storage: ok`.
 
-- [ ] **Step 4: End-to-end test against the new app**
+- [x] **Step 4: End-to-end test against the new app**
 
 Use the existing `test_api.py` against the new endpoint. Either edit the script's URL temporarily or run:
 
@@ -1473,7 +1473,16 @@ python test_api.py
 
 Expected: a job is enqueued onto `jobs-vetcostcheck`, the new worker picks it up, and the extraction completes with the same JSON shape as today.
 
-- [ ] **Step 5: No commit needed** (deployment-only). If `test_api.py` was edited locally, revert the change.
+- [x] **Step 5: No commit needed** (deployment-only). If `test_api.py` was edited locally, revert the change.
+
+**Deviations from plan as executed (2026-05-29):**
+- ✅ Image `cr3cinvoice.azurecr.io/3cix-vetcostcheck:v20260529a` built in ACR. Added a `.dockerignore` first (commit `6f373fd`) — the context was 2.1GB (`.venv` 1.6G, `temp` 272M, test data); the Dockerfile only needs `requirements.prod.txt` + `core/` + `products/`. Build dropped to ~1m.
+- 🐞 **Fixed `provision_product.sh`** (commit after `6f373fd`): worker create used `--command "python" --args "-m" "core.jobs.worker"`; the `containerapp` CLI mis-parses the leading `-m` as its own flag (`ERROR: unrecognized arguments: -m core.jobs.worker`). Changed to `--args "core/jobs/worker.py"` (script-path form, matches prod `ca-invoice-worker`; `PYTHONPATH=/app` resolves `core.*`). First run had created `ca-api-vetcostcheck` before failing on the worker → deleted it and re-ran the whole script fresh.
+- 🐞 **`SENTRY_DSN` empty is rejected by Azure** (`secret ... value or keyVaultUrl and identity should be provided`). The script defaults `SENTRY_DSN=""` and treats it as optional, but ACA won't create an empty secret. Worked around by reusing the **production** `sentry-dsn` (no separate `3cix-vetcostcheck` Sentry project exists yet — that's Task 16 Step 4). **Latent issue for `bps`/`sanierer`: the script as written requires a non-empty `SENTRY_DSN`.** Not yet hardened.
+- Redis wiring pulled from existing infra: `REDIS_URL` (reused prod `ca-invoice-worker` secret value), `REDIS_PASSWORD` = `redis-3c-invoice-v2` primary key, `KEDA_REDIS_HOST=redis-3c-invoice-v2.redis.cache.windows.net:6380`. KEDA scaler on `rq:queue:jobs-vetcostcheck` confirmed working (worker cold-started 0→1 during the e2e test).
+- **Auth made cutover-transparent:** prod `ca-invoice-api` sets `INVOICE_API_KEYS` (2 keys), and `core/config.py` uses the plural list when present (singular ignored). The provision script only sets the singular `INVOICE_API_KEY`, so as a follow-up the prod `invoice-api-keys` secret + `INVOICE_API_KEYS` env var were replicated onto `ca-api-vetcostcheck`. The new app now accepts the same client keys as prod → no client change needed at the Task 16 domain switch.
+- Worker scale cooldown is the script/ACA default **300s** (prod uses 1200s). Non-blocking; align later if desired.
+- New API FQDN: `https://ca-api-vetcostcheck.gentlewater-47cab204.germanywestcentral.azurecontainerapps.io`. `/healthz` → ok, `/ready` → `{redis: ok, storage: ok}`. E2e `test_api.py` on `testrechnung_01_bulldogge.pdf` returned a complete extraction (1 subdoc, 4 line items, totals net 109.09 / gross 129.82). Old `ca-invoice-api` / `ca-invoice-worker` untouched and still serving the custom domain.
 
 ---
 

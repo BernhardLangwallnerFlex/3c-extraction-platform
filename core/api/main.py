@@ -61,22 +61,19 @@ def custom_openapi():
         config = load_product_config()
         # Drop the JSON Schema dialect key; OpenAPI carries its own.
         item_schema = {k: v for k, v in config.extract_output_schema.items() if k != "$schema"}
-        product_result = {
-            "type": "object",
+        # type as ["object","null"] (not anyOf+default) so Swagger's "Example
+        # Value" renders the populated structure rather than just `null`.
+        schema["components"]["schemas"]["JobStatusResponse"]["properties"]["result"] = {
+            "type": ["object", "null"],
             "title": f"{config.name} extraction result",
+            "description": (
+                f"Per-product extraction output for '{config.name}' (null until the job finishes). "
+                f"Authoritative schema: products/{config.name}/extract_schema.json"
+            ),
             "properties": {
                 "number_of_subdocuments": {"type": "integer"},
                 "subdocuments": {"type": "array", "items": item_schema},
             },
-        }
-        schema["components"]["schemas"]["JobStatusResponse"]["properties"]["result"] = {
-            "anyOf": [product_result, {"type": "null"}],
-            "default": None,
-            "title": "Result",
-            "description": (
-                f"Per-product extraction output for '{config.name}'. "
-                f"Authoritative schema: products/{config.name}/extract_schema.json"
-            ),
         }
         schema["info"]["title"] = f"Extraction API — {config.name}"
     except Exception as exc:  # noqa: BLE001 — docs are best-effort; never break /openapi.json

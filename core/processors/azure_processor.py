@@ -113,8 +113,12 @@ class AzureInvoiceProcessor:
         prompt_tokens = usage.prompt_tokens
         completion_tokens = usage.completion_tokens
 
-        PROMPT_RATE = 0.00015
-        COMPLETION_RATE = 0.0006
+        # gpt-5.4 GlobalStandard (<272k context), Germany West Central, USD per 1K tokens.
+        # Azure Foundry list price (2026-06): input €2.16 / output €12.91 per 1M tokens,
+        # converted at 1 USD = 0.8601 EUR -> ~$2.51 / $15.01 per 1M. Update if the model,
+        # region, or rate changes. (Cheaper cached-input rate €0.22/1M is not tracked here.)
+        PROMPT_RATE = 0.00251
+        COMPLETION_RATE = 0.01501
         cost = (prompt_tokens / 1000 * PROMPT_RATE) + (completion_tokens / 1000 * COMPLETION_RATE)
 
         log.info(

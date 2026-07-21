@@ -27,3 +27,9 @@ def test_bps_analyze_prompt_builds_string(monkeypatch):
     prompt = config.analyze_prompt_builder(markdown_text="--- PAGE 1 --- x")
     assert isinstance(prompt, str)
     assert "invoice_pages" in prompt
+
+
+def test_bps_has_no_postprocess(monkeypatch):
+    monkeypatch.setenv("PRODUCT_NAME", "bps")
+    config = load_product_config()
+    assert config.postprocess_extraction is None

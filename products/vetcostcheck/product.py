@@ -10,6 +10,7 @@ from products.vetcostcheck.analyze_overrides import (
     build_analyze_prompt,
 )
 from products.vetcostcheck.extract_prompt import build_extract_prompt
+from products.vetcostcheck.postprocess import postprocess_extraction
 
 _HERE = Path(__file__).resolve().parent
 
@@ -23,4 +24,5 @@ CONFIG = ProductConfig(
     extract_output_schema=_EXTRACT_SCHEMA,
     analyze_prompt_builder=build_analyze_prompt,
     analyze_output_schema=ANALYZE_OUTPUT_SCHEMA,
+    postprocess_extraction=postprocess_extraction,
 )

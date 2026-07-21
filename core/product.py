@@ -23,6 +23,10 @@ class ProductConfig:
     analyze_prompt_builder: Callable[..., str] | None = None
     analyze_output_schema: dict | None = None
 
+    # Optional product-specific transform applied to each subdocument's
+    # extraction dict after the LLM call. None = no-op.
+    postprocess_extraction: Callable[[dict], dict] | None = None
+
     extra: dict[str, Any] = field(default_factory=dict)
 
 

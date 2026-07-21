@@ -304,7 +304,7 @@ class Pipeline:
         elif str(subdoc.document_number) in item_counts:
             expected_items = item_counts[str(subdoc.document_number)]
 
-        return processor.extract(
+        result = processor.extract(
             str(local_image),
             use_ocr=True,
             use_vision=True,
@@ -316,6 +316,9 @@ class Pipeline:
             ),
             subdocument_context=subdocument_context,
         )
+        if self.product_config.postprocess_extraction is not None:
+            result = self.product_config.postprocess_extraction(result)
+        return result
 
     def extract_data_from_subdocuments(self, processor):
         from concurrent.futures import ThreadPoolExecutor

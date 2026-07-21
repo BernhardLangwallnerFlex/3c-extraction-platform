@@ -44,3 +44,12 @@ def test_vetcostcheck_prompt_lists_iban_in_two_places(monkeypatch):
     # once under sender, once under payment
     assert prompt.count('"iban"') >= 2
     assert prompt.count('"bic"') >= 2
+
+
+def test_vetcostcheck_postprocess_wired(monkeypatch):
+    monkeypatch.setenv("PRODUCT_NAME", "vetcostcheck")
+    config = load_product_config()
+    assert callable(config.postprocess_extraction)
+    out = config.postprocess_extraction({"items": [{"qty": None, "unit": None}]})
+    assert out["items"][0]["qty"] == 1
+    assert out["items"][0]["unit"] == "Stück"

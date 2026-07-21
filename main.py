@@ -2,7 +2,7 @@ from core.processors.gpt_processor import GPTInvoiceProcessor
 from core.ocr.ocr_tesseract import TesseractOCR
 from core.ocr.ocr_mistral import MistralOCR
 from core.ocr.ocr_googlevision import GoogleOCR
-from core.ocr.ocr_agentic import OCRAgenticProcessor
+from core.ocr.ocr_dual import DualOCRProcessor
 from core.pipeline import Pipeline
 from dotenv import load_dotenv
 import os
@@ -26,15 +26,18 @@ file = "230041495V_Splitt.pdf"
 file_string = file.split(".")[0]
 file_path = input_folder + file
 
-# initialize OCR engines
-agentic_ocr_engine = OCRAgenticProcessor(name = "agentic_ocr")
+# initialize OCR engine (matches production tasks.py: Mistral + Azure Doc Intel).
+# NOTE: the LandingAI engine (core/ocr/ocr_agentic.OCRAgenticProcessor) is kept
+# in the repo for potential future benchmarking, but is intentionally NOT wired
+# here — running this script must not incur LandingAI/ADE credits.
+dual_ocr_engine = DualOCRProcessor(name="dual_ocr")
 
 #storage = S3Storage(region_name="eu-central-1")
 storage = AzureBlobStorage(account_name=os.getenv("AZURE_STORAGE_ACCOUNT_NAME"), account_key=os.getenv("AZURE_STORAGE_ACCOUNT_KEY"))
 
 inv = Pipeline(
     file_key="az://invoices/230075012T_Splitt.pdf",
-    ocr_engine=agentic_ocr_engine,
+    ocr_engine=dual_ocr_engine,
     storage=storage,
     output_prefix="az://invoices/processed/"  # see note below
 )

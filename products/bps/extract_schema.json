@@ -8,6 +8,11 @@
     "currency": {"type": ["string", "null"], "description": "ISO 4217 code, e.g. EUR"},
     "number": {"type": ["string", "null"], "description": "Belegnummer (Rechnungs-/Angebotsnummer)"},
     "issuedAt": {"type": ["string", "null"], "description": "Belegdatum, YYYY-MM-DD"},
+    "tradeType": {
+      "type": ["string", "null"],
+      "enum": ["LOCKSMITH", "ROAD_CONSTRUCTION", "ADVERTISING", "DRAIN_CLEANING", "GARDENING", "RESTORATION", "METAL_CONSTRUCTION", "MISC", "CARPENTER", "ROOFER", "HEATING_INSTALLATION", "ELECTRICIAN", "GLAZIER", "CABINET_MAKER", "TILER", "DRYWALL_BUILDER", "BRICK_LAYER", "FLOORER", "PAINTER", null],
+      "description": "Gewerk, inferred from company name / work description; NOT printed on the Beleg. null when no signal."
+    },
     "sender": {
       "type": "object",
       "description": "Belegersteller / Handwerker — the firm that issued the Beleg",

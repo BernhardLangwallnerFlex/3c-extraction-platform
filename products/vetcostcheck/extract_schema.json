@@ -19,7 +19,9 @@
         "country": {"type": ["string", "null"]},
         "contactPhone": {"type": ["string", "null"]},
         "contactMail": {"type": ["string", "null"]},
-        "vatId": {"type": ["string", "null"]}
+        "vatId": {"type": ["string", "null"]},
+        "iban": {"type": ["string", "null"]},
+        "bic": {"type": ["string", "null"]}
       }
     },
     "clinicians": {

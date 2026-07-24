@@ -13,12 +13,17 @@ import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
-from core.utils import log_retry
+from core.utils import log_retry, sampling_params
 import shutil
 from core.ocr.base_ocr import BaseOCREngine
 from core.utils import extract_json_from_response, strip_ocr_element_ids
 
 log = logging.getLogger(__name__)
+import structlog
+# structlog logger for LLM-call telemetry (token counts), matching the "llm_call"
+# events emitted by processors.azure_processor so cost/observability tooling sees
+# the analyze step too.
+_telemetry = structlog.get_logger()
 from core.prompt_building.prompt_building import build_prompt_for_analyze_document
 from core.product import ProductConfig
 
@@ -34,8 +39,7 @@ def _call_analyze_llm(client, model, content_blocks):
     return client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": content_blocks}],
-        temperature=0,
-        seed=42,
+        **sampling_params(model),
     )
 
 
@@ -199,7 +203,16 @@ class Pipeline:
             azure_endpoint=os.getenv("AZURE_ENDPOINT"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )
-        response = _call_analyze_llm(client, os.getenv("OPENAI_VISION_MODEL", "gpt-5.4"), content_blocks)
+        analyze_model = os.getenv("OPENAI_VISION_MODEL", "gpt-5.4")
+        response = _call_analyze_llm(client, analyze_model, content_blocks)
+        _usage = getattr(response, "usage", None)
+        if _usage is not None:
+            _telemetry.info(
+                "analyze_llm_call",
+                model=analyze_model,
+                prompt_tokens=_usage.prompt_tokens,
+                completion_tokens=_usage.completion_tokens,
+            )
         self.analysis_dict = extract_json_from_response(response.choices[0].message.content)
 
     def _subdoc_key(self, ext: str, document_number: int) -> str:

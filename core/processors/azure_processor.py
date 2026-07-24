@@ -1,5 +1,5 @@
 from openai import AzureOpenAI
-from core.utils import convert_file_to_images, extract_json_from_response, log_retry
+from core.utils import convert_file_to_images, extract_json_from_response, log_retry, sampling_params
 import base64
 import os
 from core.prompt_building.prompt_building import build_prompt_from_config
@@ -18,8 +18,7 @@ def _call_openai(client, model, content_blocks):
     return client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": content_blocks}],
-        temperature=0,
-        seed=42,
+        **sampling_params(model),
     )
 
 

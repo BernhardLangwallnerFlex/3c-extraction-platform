@@ -23,6 +23,19 @@ def log_retry(retry_state):
     )
 
 
+def sampling_params(model: str) -> dict:
+    """Sampling kwargs for chat.completions.create, adapted per model.
+
+    The GPT-5.6 family (sol/luna/terra) only supports the default temperature
+    (1); sending temperature=0 returns HTTP 400 'unsupported_value'. Older
+    models (gpt-5.4, gpt-4.x) accept temperature=0 + seed for near-deterministic
+    output, which we keep for reproducibility.
+    """
+    if "5.6" in (model or ""):
+        return {}
+    return {"temperature": 0, "seed": 42}
+
+
 def strip_ocr_element_ids(text: str) -> str:
     """Remove LandingAI element anchors and table cell IDs from OCR markdown.
 

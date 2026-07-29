@@ -15,6 +15,7 @@ from openai import AzureOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 from core.utils import log_retry, sampling_params
 import shutil
+import sentry_sdk
 from core.ocr.base_ocr import BaseOCREngine
 from core.utils import extract_json_from_response, strip_ocr_element_ids
 
@@ -358,21 +359,49 @@ class Pipeline:
         out_key = f"{self.output_prefix}/extracted_data_{self.stem}.json"
         self.storage.write_text(out_key, json.dumps(extraction_result_json, indent=4))
 
-    def cleanup_temporary_files(self):
-        # delete subdocument artifacts from storage (optional; comment out if you want to keep them)
-        for subdoc in self.subdocuments:
-            self.storage.delete(subdoc.md_key)
-            self.storage.delete(subdoc.pdf_key)
-            self.storage.delete(subdoc.image_key)
+    def cleanup_storage_artifacts(self) -> int:
+        """Delete every stored artifact for this job except the result JSON.
 
-        # always delete local working files
-        try:
-            for p in self.work_dir.glob("*"):
-                if p.is_file():
-                    p.unlink()
-            self.work_dir.rmdir()
-        except Exception:
-            pass
+        Removes the upload blob and each subdocument's markdown, sub-PDF and page
+        image. `extracted_data_<stem>.json` is deliberately kept — the 14-day
+        lifecycle rule on the container expires it.
+
+        Never raises. Extraction has already succeeded by the time this runs, so a
+        storage hiccup must not turn a good job into a failed one: every key is
+        deleted independently and failures are logged. Returns the number of keys
+        actually deleted.
+        """
+        if os.getenv("CLEANUP_ARTIFACTS", "true").strip().lower() not in {"1", "true", "yes"}:
+            _telemetry.info("artifact_cleanup_skipped", reason="CLEANUP_ARTIFACTS disabled")
+            return 0
+
+        keys = [self.file_key]
+        for subdoc in self.subdocuments:
+            keys.extend([subdoc.md_key, subdoc.pdf_key, subdoc.image_key])
+
+        deleted = 0
+        failed = 0
+        for key in keys:
+            try:
+                self.storage.delete(key)
+                deleted += 1
+            except Exception as exc:
+                failed += 1
+                _telemetry.warning("artifact_delete_failed", key=key, error=str(exc))
+
+        _telemetry.info(
+            "artifact_cleanup_completed", deleted=deleted, failed=failed, total=len(keys)
+        )
+
+        # Every delete failing points at credentials or permissions rather than a
+        # stray missing blob — surface it the way DualOCR degradation is surfaced.
+        if failed and not deleted:
+            sentry_sdk.capture_message(
+                f"Artifact cleanup deleted nothing: all {failed} deletes failed",
+                level="warning",
+            )
+
+        return deleted
     
     def cleanup_local(self):
         try:

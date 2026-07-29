@@ -74,6 +74,7 @@ extraction_suite/
 viz_pages/
 temp/
 Original_Testdaten/
+test_uploads/
 images/
 old/ 
 *.jpg

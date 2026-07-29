@@ -25,7 +25,7 @@ See [redis_resilience_plan.md](redis_resilience_plan.md) for context (Sentry `PY
 
 ## Cleanup
 - [x] **Remove LandingAI dependency**: Removed `landingai`/`landingai-ade` from requirements. OCR processor code kept for reference.
-- [ ] **Fix cleanup inconsistency**: `cleanup_temporary_files()` deletes storage artifacts but only `cleanup_local()` (local temp files) is called in production (`tasks.py:128`).
+- [x] **Fix cleanup inconsistency**: Replaced `cleanup_temporary_files()` with `Pipeline.cleanup_storage_artifacts()`, called from `tasks.py` after a successful extraction.
 - [ ] **Add caching / deduplication**: Reprocessing the same file reruns the full pipeline with no intermediate result caching.
 
 ## Done

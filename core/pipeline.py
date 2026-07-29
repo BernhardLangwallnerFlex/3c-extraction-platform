@@ -374,16 +374,18 @@ class Pipeline:
         # Known-false set (not an allowlist of true-spellings): an unrecognized
         # value — a typo, a stray quote, an inline .env comment — must fail toward
         # the documented default (cleanup enabled), not silently disable it.
-        if os.getenv("CLEANUP_ARTIFACTS", "true").strip().lower() in {"0", "false", "no", ""}:
+        if os.getenv("CLEANUP_ARTIFACTS", "true").strip().lower() in {"0", "false", "no", "off", "n", "f", ""}:
             _telemetry.info("artifact_cleanup_skipped", reason="CLEANUP_ARTIFACTS disabled")
             return 0
 
         # A vacuous extraction (analyze_document found no invoice pages) is exactly
         # the outcome a human most needs to reproduce. Don't destroy the only
-        # evidence of it — bail out before touching the upload blob.
+        # evidence of it — bail out before touching the upload blob. Distinct event
+        # name from the flag-disabled case above so alert rules don't have to
+        # parse the `reason` string to tell "routine" from "worth investigating".
         if not self.subdocuments:
             _telemetry.warning(
-                "artifact_cleanup_skipped",
+                "artifact_cleanup_skipped_no_subdocuments",
                 reason="no subdocuments — vacuous extraction, keeping upload for investigation",
                 file_key=self.file_key,
             )

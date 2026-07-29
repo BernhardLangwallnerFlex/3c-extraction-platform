@@ -92,8 +92,9 @@ def test_one_failing_delete_does_not_stop_the_others():
     assert "az://invoices/processed-bps/abc_subdocument_2.png" in storage.deleted
 
 
-def test_disabled_by_env_flag(monkeypatch):
-    monkeypatch.setenv("CLEANUP_ARTIFACTS", "false")
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", "n", "f"])
+def test_disabled_by_env_flag(monkeypatch, value):
+    monkeypatch.setenv("CLEANUP_ARTIFACTS", value)
     storage = _RecordingStorage()
     pipe = _make_pipeline(storage)
 
@@ -145,8 +146,15 @@ def test_upload_blob_is_deleted_last():
 
     pipe.cleanup_storage_artifacts()
 
-    assert storage.deleted[-1] == pipe.file_key
-    assert storage.deleted.index(pipe.file_key) == len(storage.deleted) - 1
+    assert storage.deleted == [
+        "az://invoices/processed-bps/abc_subdocument_1.md",
+        "az://invoices/processed-bps/abc_subdocument_1.pdf",
+        "az://invoices/processed-bps/abc_subdocument_1.png",
+        "az://invoices/processed-bps/abc_subdocument_2.md",
+        "az://invoices/processed-bps/abc_subdocument_2.pdf",
+        "az://invoices/processed-bps/abc_subdocument_2.png",
+        pipe.file_key,
+    ]
 
 
 def test_upload_still_deleted_last_when_a_subdoc_delete_fails():
@@ -178,7 +186,7 @@ def test_zero_subdocuments_keeps_everything_and_warns(monkeypatch):
     assert storage.deleted == []
     assert len(warnings) == 1
     event, kw = warnings[0]
-    assert event == "artifact_cleanup_skipped"
+    assert event == "artifact_cleanup_skipped_no_subdocuments"
     assert "no subdocuments" in kw["reason"]
     assert kw["file_key"] == pipe.file_key
 

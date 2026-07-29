@@ -371,13 +371,33 @@ class Pipeline:
         deleted independently and failures are logged. Returns the number of keys
         actually deleted.
         """
-        if os.getenv("CLEANUP_ARTIFACTS", "true").strip().lower() not in {"1", "true", "yes"}:
+        # Known-false set (not an allowlist of true-spellings): an unrecognized
+        # value — a typo, a stray quote, an inline .env comment — must fail toward
+        # the documented default (cleanup enabled), not silently disable it.
+        if os.getenv("CLEANUP_ARTIFACTS", "true").strip().lower() in {"0", "false", "no", ""}:
             _telemetry.info("artifact_cleanup_skipped", reason="CLEANUP_ARTIFACTS disabled")
             return 0
 
-        keys = [self.file_key]
+        # A vacuous extraction (analyze_document found no invoice pages) is exactly
+        # the outcome a human most needs to reproduce. Don't destroy the only
+        # evidence of it — bail out before touching the upload blob.
+        if not self.subdocuments:
+            _telemetry.warning(
+                "artifact_cleanup_skipped",
+                reason="no subdocuments — vacuous extraction, keeping upload for investigation",
+                file_key=self.file_key,
+            )
+            return 0
+
+        # Intermediates (subdoc md/pdf/image) are cheap to regenerate from the
+        # upload on a retry. The upload itself is not recoverable once deleted, so
+        # it must be deleted last: if the worker is killed mid-cleanup (job_timeout,
+        # SIGTERM on scale-in/rollout), RQ retries the job, and the retry needs the
+        # upload blob to still exist. Do not reorder this back to upload-first.
+        keys = []
         for subdoc in self.subdocuments:
             keys.extend([subdoc.md_key, subdoc.pdf_key, subdoc.image_key])
+        keys.append(self.file_key)
 
         deleted = 0
         failed = 0

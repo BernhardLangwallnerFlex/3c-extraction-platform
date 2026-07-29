@@ -1,13 +1,64 @@
 # Azure Deployment Plan — 3C Invoice Extraction
 
+> ## ⚠️ Historical document — read the Current State section first
+>
+> Everything from "Context" onward describes the **original single-product migration** from Render to Azure, executed in April 2026. Those phases are done, and the topology they describe has been superseded twice: by the multi-product refactor (May 2026) and by the vetcostcheck domain cutover (2026-07-21).
+>
+> The provisioning steps are kept because they document how the shared resources were built and remain the reference for recreating them. **Do not read them as a description of what is running.** Anything in Phases 4–6 that names `ca-invoice-api` / `ca-invoice-worker`, the `invoice-jobs` queue, or the `az://invoices/uploads/` + `az://invoices/processed/` prefixes refers to the now-idle legacy pair, not production.
+>
+> When you need ground truth, query it — `az containerapp show`, not this file. A stale reading of this document sent a code reviewer to a false blocker on 2026-07-29.
+
+---
+
+## Current State (verified against the live control plane 2026-07-29)
+
+Three independent product pipelines, each with its own API, queue and worker pool. Shared: the ACA environment, Redis host, ACR, and one Azure OpenAI deployment.
+
+| App pair | Queue | Image | Custom domain |
+|---|---|---|---|
+| `ca-api-vetcostcheck` / `ca-worker-vetcostcheck` | `jobs-vetcostcheck` | `3cix-vetcostcheck:v20260724` | `3cvetcostcheck.flex-capital-scale.com` |
+| `ca-api-bps` / `ca-worker-bps` | `jobs-bps` | `3cix-bps:v20260721a` | `3cbps.flex-capital-scale.com` |
+| `ca-api-sanierer` / `ca-worker-sanierer` | `jobs-sanierer` | `3cix-sanierer:v20260530a` ⚠️ | `3csanierer.flex-capital-scale.com` |
+| `ca-invoice-api` / `ca-invoice-worker` — **LEGACY, idle** | `invoice-jobs` | `invoice-app:v20260416` | none |
+
+⚠️ **Sanierer is running May's image.** It has not been redeployed since `v20260530a`, so it lacks everything merged since — including artifact cleanup. Redeploy it (`./deploy.sh sanierer <tag>`) before assuming retention behavior is uniform across products.
+
+**The legacy pair is idle but still deployed.** `ca-invoice-api` holds no custom domain (the vetcostcheck domain moved to `ca-api-vetcostcheck` on 2026-07-21) and its last blob write was that same day. It is still at `minReplicas 1`, billing around the clock — scaling it to 0 is a pending action. It still carries `AZURE_INPUT_PREFIX=az://invoices/uploads/` and `AZURE_OUTPUT_PREFIX=az://invoices/processed/`, which is why those legacy prefixes exist in the container.
+
+Also in `rg-3c-invoice`, outside the extraction pipelines: `ca-vetcostcheck-ui` (0.5 vCPU / 1 GiB, min 1 max 1), plus `ca-garagenhub` and `ca-garagenhub-ui`.
+
+**Shared resources**
+
+```
+Resource Group:        rg-3c-invoice            (germanywestcentral)
+Container Registry:    cr3cinvoice
+ACA Environment:       cae-3c-invoice
+Redis Cache:           redis-3c-invoice-v2      (Basic C0, TLS 6380)
+Log Analytics:         law-3c-invoice
+App Insights:          ai-3c-invoice            (+ healthz-ping availability test)
+```
+
+Storage and Azure OpenAI live in a **different** resource group, `3c_information_extraction`: storage account `3cixstorage` and Cognitive Services account `3cinfoextraction`.
+
+**Scaling** (verified per app): APIs 0.5 vCPU / 1 GiB, min 1 max 3, HTTP-based. Workers 2 vCPU / 4 GiB, min 0 max 5, KEDA on Redis queue length.
+
+**Deployment** is `./deploy.sh <product|all> <tag>` — per-product images, not the single `invoice-app` image the phases below describe. Always pass a unique tag; `latest` won't create a new revision.
+
+**Blob storage prefixes** are per-product: `az://invoices/uploads-<product>/` and `az://invoices/processed-<product>/`, all inside the single `invoices` container.
+
+**Artifact retention** (merged 2026-07-29): each job's upload blob and per-subdocument artifacts are deleted after a successful extraction, gated on `CLEANUP_ARTIFACTS` (default true). Result JSONs survive. Blob soft delete is on (7 days). The intended 14-day lifecycle rule on the container is **not yet applied** — see `docs/superpowers/specs/2026-07-29-artifact-retention-design.md`.
+
+---
+
 ## Context
 
-The system is currently dep
-: FastAPI API, RQ worker, and managed Redis. We're migrating to Azure for better scaling and invoicing. Azure Blob Storage and Azure OpenAI are already in use.
+The system was running on Render — FastAPI API, RQ worker, and managed Redis — and was migrated to Azure for better scaling and invoicing. Azure Blob Storage and Azure OpenAI were already in use. *(Historical: this migration completed in April 2026.)*
 
 ---
 
 ## Architecture Overview
+
+> **Historical.** This diagram shows the original two-app topology, with the production domain pointing at `ca-invoice-api`. That domain now resolves to `ca-api-vetcostcheck`, and there are three product pipelines rather than one. See Current State above.
 
 ```
                   ┌──────────────────────────────────────────────────┐
@@ -68,13 +119,15 @@ At ~40% utilization during business hours, expect ~€40-60. Full-time would be 
 
 ## Resource Naming
 
+> **Historical.** The two container-app names below are the legacy, now-idle pair. Production runs six apps (`ca-api-*` / `ca-worker-*` per product). The shared resource names are still accurate.
+
 ```
 Resource Group:        rg-3c-invoice
 Location:              germanywestcentral
 Container Registry:    cr3cinvoice
 ACA Environment:       cae-3c-invoice
-API Container App:     ca-invoice-api
-Worker Container App:  ca-invoice-worker
+API Container App:     ca-invoice-api      # LEGACY — see Current State
+Worker Container App:  ca-invoice-worker   # LEGACY — see Current State
 Redis Cache:           redis-3c-invoice-v2
 Log Analytics:         law-3c-invoice
 ```
@@ -552,6 +605,8 @@ KEDA detects the queue item and spins up a replica (~30-60s cold start).
 
 ### Upgrade paths
 
+> The commands below name `ca-invoice-worker` (legacy). Substitute `ca-worker-<product>` — and apply to each product that needs it, since the pipelines scale independently.
+
 **If worker hits OOM** (check in Log Analytics):
 ```bash
 az containerapp update --name ca-invoice-worker --resource-group $RG \
@@ -573,7 +628,7 @@ az redis update --name redis-3c-invoice-v2 --resource-group $RG --sku Standard
 
 ## Verification Checklist
 
-After deployment, verify end-to-end:
+After deployment, verify end-to-end. **Note:** the expected queue name below (`invoice-jobs`) and the worker app name in step 5 are the legacy pair's. For a product pipeline, substitute `jobs-<product>` and `ca-worker-<product>`.
 
 ```bash
 API_URL="https://3cvetcostcheck.flex-capital-scale.com"
@@ -611,11 +666,25 @@ az containerapp logs show \
 
 ## Migration Sequence
 
-1. **Provision infra** (Phase 1) — ~20 min (Redis takes longest)
-2. **Code changes** — switch to AzureInvoiceProcessor, create requirements.prod.txt
-3. **Build & push image** (Phase 2)
-4. **Deploy API + Worker** (Phase 3-4)
-5. **Test with default ACA URL** — verify end-to-end before DNS switch
-6. **DNS cutover** — remove Render CNAME, add Azure CNAME + TXT verification
-7. **Bind custom domain** (Phase 5) — managed TLS certificate
-8. **Decommission Render** — once everything is verified
+**All eight steps completed April 2026. Render is decommissioned.**
+
+1. ~~**Provision infra** (Phase 1)~~ — ~20 min (Redis takes longest)
+2. ~~**Code changes** — switch to AzureInvoiceProcessor, create requirements.prod.txt~~
+3. ~~**Build & push image** (Phase 2)~~
+4. ~~**Deploy API + Worker** (Phase 3-4)~~
+5. ~~**Test with default ACA URL**~~ — verify end-to-end before DNS switch
+6. ~~**DNS cutover** — remove Render CNAME, add Azure CNAME + TXT verification~~
+7. ~~**Bind custom domain** (Phase 5)~~ — managed TLS certificate
+8. ~~**Decommission Render**~~ — once everything is verified
+
+### What happened after this plan
+
+- **May 2026 — multi-product refactor.** Repo restructured into `core/` + `products/<name>/`; three independent API + queue + worker pipelines provisioned (`vetcostcheck`, `bps`, `sanierer`). `deploy.sh` became per-product. Plan: `docs/superpowers/plans/2026-05-07-multi-product-platform-refactor.md`.
+- **2026-07-21 — vetcostcheck domain cutover.** `3cvetcostcheck.flex-capital-scale.com` moved from `ca-invoice-api` to `ca-api-vetcostcheck`. The legacy pair went idle from that moment; it is still deployed and still at `minReplicas 1`.
+- **2026-07-29 — artifact retention.** Job artifacts are now deleted from blob storage after a successful extraction. Spec: `docs/superpowers/specs/2026-07-29-artifact-retention-design.md`.
+
+### Outstanding
+
+1. Scale `ca-invoice-api` to `minReplicas 0`, then delete the legacy pair once nothing is observed hitting its `azurecontainerapps.io` FQDN.
+2. Redeploy `sanierer` — still on `v20260530a`, so it lacks artifact cleanup and every other change since May.
+3. Apply the 14-day lifecycle policy to the `invoices` container and purge the historical backlog.

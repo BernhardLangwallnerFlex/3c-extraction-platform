@@ -6,11 +6,22 @@ from core.retention import select_for_deletion
 NOW = datetime(2026, 7, 29, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def test_legacy_prefixes_go_regardless_of_age():
+def test_recent_legacy_prefix_blob_is_kept():
+    # Legacy prefixes no longer get an unconditional pass: a blob written by the
+    # decommissioned app pair in its final days of service is recent production
+    # data, not backlog, and must survive the cutoff like anything else.
     blobs = [
-        ("uploads/abc.pdf", NOW),                                    # uploaded seconds ago
+        ("uploads/abc.pdf", NOW),
         ("processed/abc_subdocument_1.png", NOW - timedelta(days=1)),
-        ("processed//extracted_data_abc.json", NOW),
+        ("processed//extracted_data_abc.json", NOW - timedelta(days=13)),
+    ]
+    assert select_for_deletion(blobs, now=NOW) == []
+
+
+def test_old_legacy_prefix_blob_is_deleted():
+    blobs = [
+        ("uploads/old.pdf", NOW - timedelta(days=15)),
+        ("processed/old_subdocument_1.md", NOW - timedelta(days=90)),
     ]
     assert set(select_for_deletion(blobs, now=NOW)) == {b[0] for b in blobs}
 

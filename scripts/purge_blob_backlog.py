@@ -9,8 +9,13 @@ within that window.
 """
 import argparse
 import os
+import sys
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 from azure.storage.blob import BlobServiceClient
 from dotenv import load_dotenv
@@ -42,17 +47,24 @@ def main() -> None:
 
     counts: dict[str, int] = defaultdict(int)
     sizes: dict[str, int] = defaultdict(int)
-    for name, _, size in blobs:
+    oldest: dict[str, datetime] = {}
+    newest: dict[str, datetime] = {}
+    for name, modified, size in blobs:
         if name in doomed:
             bucket = name.split("/")[0] if "/" in name else "(root)"
             counts[bucket] += 1
             sizes[bucket] += size
+            if bucket not in oldest or modified < oldest[bucket]:
+                oldest[bucket] = modified
+            if bucket not in newest or modified > newest[bucket]:
+                newest[bucket] = modified
 
     print(f"account={account} container={args.container} "
           f"cutoff_days={args.cutoff_days}")
     print(f"total={len(blobs)} selected={len(doomed)} keeping={len(blobs) - len(doomed)}")
     for bucket in sorted(counts):
-        print(f"  {bucket:26} {counts[bucket]:5d} blobs  {sizes[bucket] / 1048576:8.1f} MB")
+        date_range = f"{oldest[bucket]:%Y-%m-%d} .. {newest[bucket]:%Y-%m-%d}"
+        print(f"  {bucket:26} {counts[bucket]:5d} blobs  {sizes[bucket] / 1048576:8.1f} MB  {date_range}")
 
     if not args.apply:
         print("\nDRY RUN — nothing deleted. Re-run with --apply to delete.")

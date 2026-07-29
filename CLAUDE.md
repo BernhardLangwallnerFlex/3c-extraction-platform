@@ -39,7 +39,7 @@ python main.py
 ./deploy.sh [tag]
 ```
 
-There is no test suite or linter configured. Python 3.11+ (Dockerfile uses 3.11-slim).
+Tests: `.venv/bin/python -m pytest tests/` (pytest 9.x). No linter configured. Python 3.11+ (Dockerfile uses 3.11-slim).
 
 ## Architecture
 
@@ -87,6 +87,7 @@ Production uses `AzureInvoiceProcessor` (Azure OpenAI). `GPTInvoiceProcessor` (d
 ## Key Environment Variables
 
 - `STORAGE_BACKEND` — `local`, `s3`, or `azure`
+- `CLEANUP_ARTIFACTS` — `true` (default) deletes the upload and per-subdocument artifacts from storage after a successful job; the result JSON survives and is expired by the container's 14-day lifecycle rule. Set to `false` for local work so artifacts stay inspectable.
 - `AZURE_ENDPOINT`, `AZURE_OPENAI_KEY`, `AZURE_OPENAI_API_VERSION` — for Azure OpenAI processor
 - `MISTRAL_API_KEY` — for Mistral OCR
 - `AZURE_DOCINTEL_ENDPOINT`, `AZURE_DOCINTEL_KEY` — for Azure Document Intelligence OCR

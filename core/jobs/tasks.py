@@ -125,6 +125,13 @@ def process_file(file_id: str):
         invoice.extract_data_from_subdocuments(processor)
         log.info("extraction_completed", file_id=file_id, duration_s=round(time.monotonic() - t, 2), subdocuments=len(invoice.subdocuments))
 
+        # Only reached when extraction succeeded — every exception path above skips
+        # cleanup so a failed job keeps its artifacts for reproduction.
+        t = time.monotonic()
+        deleted = invoice.cleanup_storage_artifacts()
+        log.info("artifact_cleanup", file_id=file_id,
+                 duration_s=round(time.monotonic() - t, 2), deleted=deleted)
+
         total_duration = round(time.monotonic() - job_start, 2)
         log.info("job_completed", file_id=file_id, duration_s=total_duration, subdocuments=len(invoice.subdocuments))
 

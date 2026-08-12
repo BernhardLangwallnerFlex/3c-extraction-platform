@@ -118,5 +118,13 @@ temp_*/
 benchmarks/
 notebooks/
 
+# Local-only corpora and experiment scratch (~25 MB). Specs may reference these
+# paths — they are on the maintainer's machine, not in the repo.
+.playwright-mcp/
+GOT/
+bps_sanierer_input/
+handover_pruefung/
+places_experiment/
+
 env_aws
 api_key_prod.txt

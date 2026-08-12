@@ -170,6 +170,10 @@ proving the core floor composes with VCC's existing hook.
 
 **Regression (the one that matters):** every real Beleg must come back 100. A false 200
 auto-cancels a legitimate claim.
+
+> `bps_sanierer_input/` is gitignored — it lives on the maintainer's machine, not in the
+> repo. `3C_testdaten_pdf/` is committed.
+
 - `bps_sanierer_input/BPS_Input/BPS_{1..7}.pdf` under `PRODUCT_NAME=bps`
 - the 7 PDFs in `bps_sanierer_input/Sanierer_Input/` under `PRODUCT_NAME=sanierer`
 - the 15 PDFs at the top level of `3C_testdaten_pdf/` under `PRODUCT_NAME=vetcostcheck`

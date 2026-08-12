@@ -35,9 +35,14 @@ Output files land in `./temp/` when using local storage.
 # Ad-hoc processing script (edit main.py to set file paths)
 python main.py
 
-# Deploy to Azure Container Apps (builds in ACR + updates both apps)
-./deploy.sh [tag]
+# Deploy to Azure Container Apps (builds in ACR + updates that tier's API + worker)
+./deploy.sh <product|all> [tag] [tier]      # tier: prod (default) | test
+
+# Promote the image already verified on test to production (dry run without --apply)
+scripts/promote.sh <product> <tag> [--apply]
 ```
+
+See **Deployment** below for the full two-tier workflow.
 
 Tests: `.venv/bin/python -m pytest tests/` (pytest 9.x). No linter configured. Python 3.11+ (Dockerfile uses 3.11-slim).
 

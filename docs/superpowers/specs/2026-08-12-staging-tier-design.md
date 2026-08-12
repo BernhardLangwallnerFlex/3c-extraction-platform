@@ -181,6 +181,21 @@ Steps 2–3 and 7 are independent of steps 4–5, which block on DNS propagation
 - A separate staging resource group, ACA environment, or Redis instance.
 - A dedicated staging Azure OpenAI deployment (listed above as the mitigation if quota
   contention materialises).
-- Retiring the legacy `ca-invoice-*` pair and redeploying production `sanierer` off its May
-  image (`v20260530a`). Both are real, both are pre-existing, and both are tracked in
-  `azure_deployment_plan.md`.
+- Retiring the legacy `ca-invoice-*` pair. Pre-existing, tracked in
+  `azure_deployment_plan.md`, and independent of this work.
+
+## Included pre-existing fixes
+
+Two live defects are folded into this work because the tier changes touch exactly the code
+and apps that carry them.
+
+**Redeploy production `sanierer`.** Verified 2026-08-12: both `ca-api-sanierer` and
+`ca-worker-sanierer` still run `3cix-sanierer:v20260530a` — May's image. It therefore lacks
+artifact cleanup and every change merged since. It must be redeployed through the new
+test-then-promote path, which doubles as the first real exercise of that path.
+
+**Set `SENTRY_ENVIRONMENT` on the six existing apps.** Verified 2026-08-12: the variable is
+set on none of them, so `core/api/main.py` falls back to `production`. That is coincidentally
+correct for production today, but it is unset rather than intended, and the fix belongs in
+`provision_product.sh` for both tiers. Set it explicitly to `production` on the existing six
+so the value is declared rather than defaulted.

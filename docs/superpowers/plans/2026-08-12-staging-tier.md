@@ -10,6 +10,13 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-12-staging-tier-design.md`
 
+> **Post-implementation correction.** Tasks 2 and 3 below specify a dry-run env var named
+> `DRY_RUN`. The final review found that a single generic name shared by two scripts is a
+> production hazard: a value exported to preview a provision silently no-ops a subsequent
+> `deploy.sh`, which exits 0 having built and deployed nothing. The shipped code therefore
+> uses **`PROVISION_DRY_RUN`** and **`DEPLOY_DRY_RUN`**. Task 2's and Task 3's text below is
+> left as the historical record; the operational commands in Task 6 use the correct names.
+
 ## Global Constraints
 
 - Target bash 3.2 — macOS ships it. No `declare -A`, no `${var,,}`, no `mapfile`. The existing `provision_product.sh` already documents the bash-3.2-safe empty-array idiom `${arr[@]+"${arr[@]}"}`; keep using it.
@@ -940,7 +947,7 @@ Expected: an account name, and **no output** from the second command.
 set -a; source .env; set +a
 for p in vetcostcheck bps sanierer; do
   echo "--- $p ---"
-  DRY_RUN=1 scripts/provision_product.sh "$p" v20260812a test
+  PROVISION_DRY_RUN=1 scripts/provision_product.sh "$p" v20260812a test
 done
 ```
 Expected: for each, `API_APP=ca-api-<p>-test`, `SENTRY_ENVIRONMENT=staging`, `CLEANUP_ARTIFACTS=false`, `API_MIN_REPLICAS=0`.

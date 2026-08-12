@@ -132,7 +132,7 @@ scripts/promote.sh bps v20260812a --apply    # re-points the production pair at 
 
 Rollback: `scripts/promote.sh <product> <previous-tag> --apply --force-rollback` skips only the "must be on test" guard; the `latest`, dirty-tree and `main`-branch guards still apply.
 
-**The test tier is not provisioned yet.** The tooling above is merged and works, but no `ca-api-*-test` / `ca-worker-*-test` app exists and no `*-test.flex-capital-scale.com` hostname resolves. Create a test pair first with `scripts/provision_product.sh <product> <tag> test` (`DRY_RUN=1` prints the resolved config without calling `az`) before the workflow above has anything to deploy to.
+**The test tier is not provisioned yet.** The tooling above is merged and works, but no `ca-api-*-test` / `ca-worker-*-test` app exists and no `*-test.flex-capital-scale.com` hostname resolves. Create a test pair first with `scripts/provision_product.sh <product> <tag> test` (`PROVISION_DRY_RUN=1` prints the resolved config without calling `az`) before the workflow above has anything to deploy to.
 
 **Important:** `deploy.sh` defaults to the `latest` tag. Redeploying with the same tag won't create a new revision — use a unique tag like `./deploy.sh bps v20260812a` to force a new revision.
 

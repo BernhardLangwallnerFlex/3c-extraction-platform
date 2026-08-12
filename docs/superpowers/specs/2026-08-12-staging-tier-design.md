@@ -30,6 +30,10 @@ below.
 
 ## Topology
 
+> Verified against the live control plane 2026-08-12: the three production pairs exist as
+> described, all three custom domains follow `3c<p>.flex-capital-scale.com`, no `-test` app
+> names are taken, and `SENTRY_ENVIRONMENT` is set on none of the apps.
+
 Six new Container Apps in the existing `cae-3c-invoice` environment. Shared: ACA
 environment, `redis-3c-invoice-v2`, `cr3cinvoice`, `3cixstorage`, and the `3cinfoextraction`
 Azure OpenAI deployment.
@@ -131,9 +135,9 @@ The staging tier adds effectively no standing cost. Staging workers scale to zer
 idle) and staging APIs now do too. Against the ~€103/mo total from `costing.md`, the increment
 is the occasional cold-start compute plus test-run LLM tokens.
 
-Separately, the idle legacy pair `ca-invoice-api` / `ca-invoice-worker` is still at
-`minReplicas 1`, costing roughly €25/mo to do nothing. Retiring it more than covers the test
-tier.
+Separately, the idle legacy `ca-invoice-api` is still at `minReplicas 1`, costing roughly
+€11/mo (costing.md's per-API figure) to do nothing. Its worker is already at `minReplicas 0`
+and costs nothing. Retiring the API more than covers the test tier.
 
 ## Commissioning sequence
 

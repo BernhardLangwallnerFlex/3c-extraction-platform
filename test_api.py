@@ -12,7 +12,7 @@ HEADERS = {
     "X-API-Key": API_KEY
 }
 
-TEST_FILE = "3C_testdaten_pdf/testrechnung_01_bulldogge.pdf"   # <-- adjust path
+TEST_FILE = os.getenv("TEST_FILE", "3C_testdaten_pdf/testrechnung_01_bulldogge.pdf")
 
 
 def upload_file():

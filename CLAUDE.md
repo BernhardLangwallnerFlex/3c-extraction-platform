@@ -104,7 +104,32 @@ Deployed on Azure Container Apps (API + worker) with Azure Cache for Redis (Basi
 
 Worker is configured with `min-replicas 0` and KEDA scaling on Redis queue length (1200s cooldown). It scales to zero when idle and wakes on first enqueued job.
 
-**Important:** `deploy.sh` defaults to the `latest` tag. Redeploying with the same tag won't create a new revision — use a unique tag like `./deploy.sh v20260416` to force a new revision.
+### Two-tier deploys (prod + test)
+
+Each product has a production app pair and a test app pair, sharing one Container Apps environment and one ACR image repo. Test is production's name with a `-test` suffix on everything *except* the image repo:
+
+- **Production:** `ca-api-<product>` / `ca-worker-<product>`, queue `jobs-<product>`, domain `3c<product>.flex-capital-scale.com`, blob prefixes `uploads-<product>/` and `processed-<product>/`.
+- **Test:** `ca-api-<product>-test` / `ca-worker-<product>-test`, queue `jobs-<product>-test`, domain `3c<product>-test.flex-capital-scale.com`, blob prefixes `uploads-<product>-test/` and `processed-<product>-test/`.
+- **Image repo is not tiered** — both tiers pull `3cix-<product>` from ACR. That's what lets promotion re-point prod at the exact digest that ran on test instead of rebuilding.
+
+`scripts/lib/tier.sh` (`resolve_tier_names <product> [tier]`, tier defaults to `prod`) is the single source of truth for all of the above; `deploy.sh`, `promote.sh` and `scripts/provision_product.sh` all source it, so they can't disagree.
+
+**Workflow** — merge to `main` first, so what you promote is what you tested:
+
+```bash
+./deploy.sh bps v20260812a test              # build in ACR, point the -test pair at it
+# ...verify against the test app/domain...
+scripts/promote.sh bps v20260812a            # dry run: prints what would change
+scripts/promote.sh bps v20260812a --apply    # re-points the production pair at that same image
+```
+
+`promote.sh` never builds — it only re-points production at an image already in ACR — and refuses to run unless: the tag isn't `latest`, the working tree is clean, you're on `main`, and the tag is the one currently deployed on the product's `-test` app. That last guard is the point: it makes "production only ever runs what test ran" a property of the tooling, not a habit — which is also why merging before deploying to test matters, otherwise the two could diverge.
+
+Rollback: `scripts/promote.sh <product> <previous-tag> --apply --force-rollback` skips only the "must be on test" guard; the `latest`, dirty-tree and `main`-branch guards still apply.
+
+**The test tier is not provisioned yet.** The tooling above is merged and works, but no `ca-api-*-test` / `ca-worker-*-test` app exists and no `*-test.flex-capital-scale.com` hostname resolves. Create a test pair first with `scripts/provision_product.sh <product> <tag> test` (`DRY_RUN=1` prints the resolved config without calling `az`) before the workflow above has anything to deploy to.
+
+**Important:** `deploy.sh` defaults to the `latest` tag. Redeploying with the same tag won't create a new revision — use a unique tag like `./deploy.sh bps v20260812a` to force a new revision.
 
 ## Resilience
 

@@ -11,7 +11,10 @@ set -euo pipefail
 # Pass --apply to execute.
 #
 # --force-rollback skips ONLY the "tag must be what is on test" guard, so an
-# older known-good tag can be restored. Every other guard still applies.
+# older known-good tag can be restored. Every other guard still applies, and
+# --force-rollback additionally requires the image to actually exist in ACR
+# (checked via `az acr manifest show`), since the skipped guard is what would
+# otherwise have caught a mistyped tag.
 
 PRODUCT="${1:?Usage: scripts/promote.sh <product> <tag> [--apply] [--force-rollback]}"
 TAG="${2:?Usage: scripts/promote.sh <product> <tag> [--apply] [--force-rollback]}"
@@ -85,6 +88,25 @@ if [[ "$FORCE_ROLLBACK" -eq 0 ]]; then
     echo "ERROR: ${IMAGE} is not the image currently on test." >&2
     echo "       ${TEST_API_APP} runs: ${DEPLOYED_ON_TEST}" >&2
     echo "       Deploy this tag to test first, or pass --force-rollback to restore a known-good tag." >&2
+    exit 1
+  fi
+else
+  # --force-rollback skips the "ran on test" guard above. Nothing else looks
+  # at ACR, so without this check a typo'd tag would only surface once
+  # `az containerapp update` runs, creating a production revision that can
+  # never pull. Verify the image is a real, pullable manifest first.
+  if MANIFEST_ERR="$(az acr manifest show -r "$ACR_NAME" -n "${IMAGE_REPO}:${TAG}" 2>&1 >/dev/null)"; then
+    : # confirmed present in ACR — proceed
+  else
+    if echo "$MANIFEST_ERR" | grep -qiE "not found|unknown|does not exist|404"; then
+      echo "ERROR: ${IMAGE_REPO}:${TAG} was not found in ACR (${ACR_NAME})." >&2
+      echo "       Check that the tag is correct." >&2
+    else
+      echo "ERROR: could not verify ${IMAGE_REPO}:${TAG} exists in ACR (${ACR_NAME}) — the query itself failed." >&2
+      echo "       This looks like an ACR/auth problem, not necessarily a bad tag — check 'az login' and retry." >&2
+    fi
+    echo "$MANIFEST_ERR" >&2
+    echo "Refusing --force-rollback with an unverified image." >&2
     exit 1
   fi
 fi

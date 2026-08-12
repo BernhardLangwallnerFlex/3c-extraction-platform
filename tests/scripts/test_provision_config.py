@@ -1,8 +1,9 @@
 """Tier-specific configuration emitted by provision_product.sh.
 
-Runs the script with DRY_RUN=1, which prints resolved config and exits before
-any az call. Required secrets are stubbed with dummy values because the script
-validates their presence up front.
+Runs the script with PROVISION_DRY_RUN=1, which prints resolved config and
+exits before any az call (including the idempotency probes and ACR lookup).
+Required secrets are stubbed with dummy values anyway, since dry-run's
+behaviour should not depend on whether a real `az` happens to be on PATH.
 """
 import pathlib
 import subprocess
@@ -11,7 +12,7 @@ REPO = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "scripts" / "provision_product.sh"
 
 _STUB_ENV = {
-    "DRY_RUN": "1",
+    "PROVISION_DRY_RUN": "1",
     "REDIS_URL": "rediss://stub",
     "KEDA_REDIS_HOST": "stub:6380",
     "REDIS_PASSWORD": "stub",

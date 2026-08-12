@@ -23,7 +23,9 @@ set -euo pipefail
 # Optional env:
 #   INVOICE_API_KEY                 — generated if unset
 #   SENTRY_DSN                      — Sentry disabled if unset (secret/env omitted)
-#   DRY_RUN=1                       — print resolved config and exit before any az call
+#   PROVISION_DRY_RUN=1             — print resolved config and exit before any az call
+#                                     (namespaced so it can never be triggered by an
+#                                     inherited DRY_RUN meant for another script)
 
 PRODUCT="${1:?Usage: scripts/provision_product.sh <product> <image-tag> [tier]}"
 IMAGE_TAG="${2:?Usage: scripts/provision_product.sh <product> <image-tag> [tier]}"
@@ -37,6 +39,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/tier.sh
 source "${SCRIPT_DIR}/lib/tier.sh"
 resolve_tier_names "$PRODUCT" "$TIER_ARG"
+
+# Dry run: print the resolved configuration and stop before any az call at all
+# (no idempotency probes, no ACR lookup). This must come before every az
+# invocation below, or dry-run's output and exit code depend on Azure/az state.
+if [[ "${PROVISION_DRY_RUN:-0}" == "1" ]]; then
+  ACR_SERVER="${ACR_NAME}.azurecr.io"
+  IMAGE="${ACR_SERVER}/${IMAGE_REPO}:${IMAGE_TAG}"
+  echo "TIER=${TIER}"
+  echo "API_APP=${API_APP}"
+  echo "WORKER_APP=${WORKER_APP}"
+  echo "QUEUE_NAME=${QUEUE_NAME}"
+  echo "IMAGE=${IMAGE}"
+  echo "API_HOSTNAME=${API_HOSTNAME}"
+  echo "AZURE_INPUT_PREFIX=${AZURE_INPUT_PREFIX}"
+  echo "AZURE_OUTPUT_PREFIX=${AZURE_OUTPUT_PREFIX}"
+  echo "SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT_VALUE}"
+  echo "CLEANUP_ARTIFACTS=${CLEANUP_ARTIFACTS_VALUE}"
+  echo "API_MIN_REPLICAS=${API_MIN_REPLICAS}"
+  echo "API_MAX_REPLICAS=${API_MAX_REPLICAS}"
+  echo "WORKER_MIN_REPLICAS=${WORKER_MIN_REPLICAS}"
+  echo "WORKER_MAX_REPLICAS=${WORKER_MAX_REPLICAS}"
+  exit 0
+fi
 
 # Idempotency: skip if both apps exist
 if az containerapp show --name "$API_APP" --resource-group "$RG" >/dev/null 2>&1 \
@@ -62,27 +87,8 @@ fi
 INVOICE_API_KEY="${INVOICE_API_KEY:-$(openssl rand -hex 32)}"
 SENTRY_DSN="${SENTRY_DSN:-}"
 
-ACR_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv 2>/dev/null || echo "cr3cinvoice.azurecr.io")
+ACR_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
 IMAGE="${ACR_SERVER}/${IMAGE_REPO}:${IMAGE_TAG}"
-
-# Dry run: print the resolved configuration and stop before mutating anything.
-if [[ "${DRY_RUN:-0}" == "1" ]]; then
-  echo "TIER=${TIER}"
-  echo "API_APP=${API_APP}"
-  echo "WORKER_APP=${WORKER_APP}"
-  echo "QUEUE_NAME=${QUEUE_NAME}"
-  echo "IMAGE=${IMAGE}"
-  echo "API_HOSTNAME=${API_HOSTNAME}"
-  echo "AZURE_INPUT_PREFIX=${AZURE_INPUT_PREFIX}"
-  echo "AZURE_OUTPUT_PREFIX=${AZURE_OUTPUT_PREFIX}"
-  echo "SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT_VALUE}"
-  echo "CLEANUP_ARTIFACTS=${CLEANUP_ARTIFACTS_VALUE}"
-  echo "API_MIN_REPLICAS=${API_MIN_REPLICAS}"
-  echo "API_MAX_REPLICAS=${API_MAX_REPLICAS}"
-  echo "WORKER_MIN_REPLICAS=${WORKER_MIN_REPLICAS}"
-  echo "WORKER_MAX_REPLICAS=${WORKER_MAX_REPLICAS}"
-  exit 0
-fi
 
 ACR_PASS=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
 

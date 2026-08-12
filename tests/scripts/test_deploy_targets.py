@@ -10,7 +10,7 @@ def deploy(*args):
     proc = subprocess.run(
         [str(SCRIPT), *args],
         capture_output=True, text=True, cwd=REPO,
-        env={"DRY_RUN": "1", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
+        env={"DEPLOY_DRY_RUN": "1", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
     )
     assert proc.returncode == 0, f"exit {proc.returncode}: {proc.stderr}"
     builds = [l.split("=", 1)[1] for l in proc.stdout.splitlines() if l.startswith("BUILD=")]

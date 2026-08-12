@@ -10,6 +10,11 @@ set -euo pipefail
 #   ./deploy.sh vetcostcheck v20260812
 #   ./deploy.sh bps v20260812 test
 #   ./deploy.sh all v20260812 test
+#
+# Env:
+#   DEPLOY_DRY_RUN=1   — print resolved build/target info and exit, no az calls
+#                        (namespaced so it can never be triggered by an
+#                        inherited DRY_RUN meant for another script)
 
 PRODUCT="${1:?Usage: ./deploy.sh <product|all> [tag] [tier]}"
 IMAGE_TAG="${2:-latest}"
@@ -22,6 +27,10 @@ PRODUCTS=("vetcostcheck" "bps" "sanierer")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/tier.sh
 source "${SCRIPT_DIR}/scripts/lib/tier.sh"
+
+if [[ "${DEPLOY_DRY_RUN:-0}" == "1" ]]; then
+  echo "== DRY RUN — nothing built or deployed =="
+fi
 
 deploy_one() {
   local product="$1"
@@ -36,14 +45,14 @@ deploy_one() {
   resolve_tier_names "$product" "$tier"
 
   local acr_server image
-  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  if [[ "${DEPLOY_DRY_RUN:-0}" == "1" ]]; then
     acr_server="cr3cinvoice.azurecr.io"
   else
     acr_server=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
   fi
   image="${acr_server}/${IMAGE_REPO}:${tag}"
 
-  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+  if [[ "${DEPLOY_DRY_RUN:-0}" == "1" ]]; then
     echo "BUILD=${image}"
     echo "TARGET=${API_APP}"
     echo "TARGET=${WORKER_APP}"
@@ -76,4 +85,9 @@ if [[ "$PRODUCT" == "all" ]]; then
   done
 else
   deploy_one "$PRODUCT" "$IMAGE_TAG" "$TIER_ARG"
+fi
+
+if [[ "${DEPLOY_DRY_RUN:-0}" != "1" ]]; then
+  echo ""
+  echo "==> Done."
 fi

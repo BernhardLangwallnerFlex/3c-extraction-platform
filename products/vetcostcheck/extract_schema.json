@@ -4,6 +4,8 @@
   "description": "Structured invoice/receipt/prescription data extracted from a single veterinary sub-document. Translated from the JSON-Ziel-Schema embedded in products/vetcostcheck/extract_prompt.py — this file is documentation and a future validation target; it is not currently enforced against the LLM output.",
   "type": "object",
   "properties": {
+    "returncode": {"type": "integer", "enum": [100, 200, 300], "description": "Klassifizierung des Subdokuments: 100=Beleg (Rechnung/Angebot), 200=kein Beleg, 300=nicht lesbar. Always present."},
+    "returncodeReasons": {"type": "array", "items": {"type": "string"}, "description": "German reasons for a 200 or 300. Empty for 100."},
     "type": {"type": ["string", "null"], "enum": ["invoice", "receipt", "prescription", null]},
     "currency": {"type": ["string", "null"], "description": "ISO 4217 code, e.g. EUR"},
     "number": {"type": ["string", "null"]},

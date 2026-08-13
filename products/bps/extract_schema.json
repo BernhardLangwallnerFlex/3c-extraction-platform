@@ -4,6 +4,8 @@
   "description": "Structured Beleg data extracted from a single BPS sub-document (Belegprüfung Sach). Documentation + future validation target; not currently enforced against the LLM output. Wrapped by the pipeline in {number_of_subdocuments, subdocuments[]}.",
   "type": "object",
   "properties": {
+    "returncode": {"type": "integer", "enum": [100, 200, 300], "description": "Klassifizierung des Subdokuments: 100=Beleg (Rechnung/Angebot), 200=kein Beleg, 300=nicht lesbar. Always present."},
+    "returncodeReasons": {"type": "array", "items": {"type": "string"}, "description": "German reasons for a 200 or 300. Empty for 100."},
     "type": {"type": ["string", "null"], "enum": ["invoice", "quote", null], "description": "Belegart: invoice=Rechnung, quote=Angebot"},
     "currency": {"type": ["string", "null"], "description": "ISO 4217 code, e.g. EUR"},
     "number": {"type": ["string", "null"], "description": "Belegnummer (Rechnungs-/Angebotsnummer)"},

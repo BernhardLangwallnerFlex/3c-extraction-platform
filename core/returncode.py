@@ -35,7 +35,17 @@ def _present(value) -> bool:
 
 
 def _has_beleg_evidence(result: dict) -> bool:
-    """Any single field that only a Beleg would carry."""
+    """Any single field that only a Beleg would carry.
+
+    `type` counts only when non-null. That is the mirror image of the rejected
+    "type is null, so it isn't a Beleg" heuristic, not the same thing: the
+    extraction prompt tells the model to emit null whenever the Belegart is
+    unclear, so absence is noise — but a model that positively named the
+    Belegart has classified the document, and this is the one place where
+    ignoring that produces a 200.
+    """
+    if _present(result.get("type")):
+        return True
     if _present(result.get("number")) or _present(result.get("issuedAt")):
         return True
     items = result.get("items")

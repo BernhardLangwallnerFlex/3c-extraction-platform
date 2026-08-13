@@ -54,6 +54,8 @@ def test_missing_code_falls_through_to_derivation():
 
 
 @pytest.mark.parametrize("field,value", [
+    ("type", "invoice"),
+    ("type", "quote"),
     ("number", "R-1"),
     ("issuedAt", "2026-01-05"),
     ("items", [{"name": "x"}]),
@@ -86,6 +88,18 @@ def test_blank_strings_are_not_evidence():
 
 def test_no_evidence_derives_200():
     assert apply_returncode_floor(_empty())["returncode"] == 200
+
+
+def test_null_type_is_not_evidence():
+    # The mirror-image guard: a non-null `type` counts as evidence, but a null
+    # one must NOT count as counter-evidence. Rule 7 of the extraction prompt
+    # tells the model to emit null whenever the Belegart is unclear, so genuine
+    # but ambiguous Belege land there too — which is exactly why the consumer
+    # was told not to branch on `type` in the first place.
+    payload = _empty()
+    payload["type"] = None
+    payload["number"] = "R-1"
+    assert apply_returncode_floor(payload)["returncode"] == 100
 
 
 def test_floor_never_derives_300():

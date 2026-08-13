@@ -98,8 +98,13 @@ The floor is **fill-in-only and never overrides a valid LLM value**:
 
 - `returncode` already 100, 200, or 300 (as an int) → keep it.
 - Missing, `null`, a string such as `"100"`, or any other value → derive it:
-  any of `number`, `issuedAt`, a non-empty `items`, `totals.net`, or `totals.gross` present
-  → 100; otherwise → 200.
+  any of a non-null `type`, `number`, `issuedAt`, a non-empty `items`, `totals.net`, or
+  `totals.gross` present → 100; otherwise → 200.
+  A non-null `type` counts because a model that positively named the Belegart has classified
+  the document. This is the mirror image of the rejected "`type == null` means not a Beleg"
+  heuristic, not the same thing — absence stays meaningless, presence does not. Adding a
+  field to this list is monotonic: it can only turn a derived 200 into a 100, never the
+  reverse, so it cannot make the expensive error more likely.
 - **Never derives 300.** Distinguishing unreadable from not-a-Beleg requires the model's
   view of the page; deterministically the two are indistinguishable.
 - `returncodeReasons` is coerced to a list of strings (non-strings dropped, non-list
@@ -110,8 +115,8 @@ Rationale for fill-in-only: an automatic 100 → 200 downgrade on a real invoice
 extracted badly would cause a wrongful Storno. Leaving a wrong 100 in place reproduces
 today's behaviour, which a human already handles.
 
-The derivation field names (`number`, `issuedAt`, `items`, `totals`) exist in all three
-product schemas, so no per-product configuration is needed.
+The derivation field names (`type`, `number`, `issuedAt`, `items`, `totals`) exist in all
+three product schemas, so no per-product configuration is needed.
 
 ### Layer 3 — splitter fixes (core + per product)
 

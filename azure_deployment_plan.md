@@ -10,18 +10,40 @@
 
 ---
 
-## Current State (verified against the live control plane 2026-07-29)
+## Current State (verified against the live control plane 2026-08-13)
 
-Three independent product pipelines, each with its own API, queue and worker pool. Shared: the ACA environment, Redis host, ACR, and one Azure OpenAI deployment.
+Three product pipelines, each with its own API, queue and worker pool — and since
+2026-08-13, each with a **test tier** alongside production. Shared: the ACA environment,
+Redis host, ACR, storage account, and one Azure OpenAI deployment.
+
+**Production**
 
 | App pair | Queue | Image | Custom domain |
 |---|---|---|---|
-| `ca-api-vetcostcheck` / `ca-worker-vetcostcheck` | `jobs-vetcostcheck` | `3cix-vetcostcheck:v20260724` | `3cvetcostcheck.flex-capital-scale.com` |
-| `ca-api-bps` / `ca-worker-bps` | `jobs-bps` | `3cix-bps:v20260721a` | `3cbps.flex-capital-scale.com` |
-| `ca-api-sanierer` / `ca-worker-sanierer` | `jobs-sanierer` | `3cix-sanierer:v20260530a` ⚠️ | `3csanierer.flex-capital-scale.com` |
+| `ca-api-vetcostcheck` / `ca-worker-vetcostcheck` | `jobs-vetcostcheck` | `3cix-vetcostcheck:v20260813a` | `3cvetcostcheck.flex-capital-scale.com` |
+| `ca-api-bps` / `ca-worker-bps` | `jobs-bps` | `3cix-bps:v20260813a` | `3cbps.flex-capital-scale.com` |
+| `ca-api-sanierer` / `ca-worker-sanierer` | `jobs-sanierer` | `3cix-sanierer:v20260813a` | `3csanierer.flex-capital-scale.com` |
 | `ca-invoice-api` / `ca-invoice-worker` — **LEGACY, idle** | `invoice-jobs` | `invoice-app:v20260416` | none |
 
-⚠️ **Sanierer is running May's image.** It has not been redeployed since `v20260530a`, so it lacks everything merged since — including artifact cleanup. Redeploy it (`./deploy.sh sanierer <tag>`) before assuming retention behavior is uniform across products.
+**Test** (provisioned 2026-08-13; `min-replicas 0` on both API and worker, so near-zero
+standing cost and a cold start on the first request after idle)
+
+| App pair | Queue | Image | Custom domain |
+|---|---|---|---|
+| `ca-api-vetcostcheck-test` / `ca-worker-vetcostcheck-test` | `jobs-vetcostcheck-test` | `3cix-vetcostcheck:v20260813a` | `3cvetcostcheck-test.flex-capital-scale.com` |
+| `ca-api-bps-test` / `ca-worker-bps-test` | `jobs-bps-test` | `3cix-bps:v20260813a` | `3cbps-test.flex-capital-scale.com` |
+| `ca-api-sanierer-test` / `ca-worker-sanierer-test` | `jobs-sanierer-test` | `3cix-sanierer:v20260813a` | `3csanierer-test.flex-capital-scale.com` |
+
+Test apps carry `SENTRY_ENVIRONMENT=staging` and `CLEANUP_ARTIFACTS=false` (artifacts kept
+for inspection), a **distinct** `INVOICE_API_KEY` per app, and worker `max-replicas 2` to cap
+how much shared Azure OpenAI quota a test run can take from production. Each test worker's
+KEDA rule watches `rq:queue:jobs-<product>-test` — verified 2026-08-13 that a job submitted
+to a test endpoint never moves a production queue.
+
+**All three products were promoted to `v20260813a` on 2026-08-13.** Before that, every
+production app predated the artifact-cleanup merge (`b806d16`, 2026-07-29) — vetcostcheck on
+July 24, bps on July 21, sanierer on May 30 — so cleanup had **never actually run in
+production** despite being on `main` for two weeks. It is live as of this promotion.
 
 **The legacy pair is idle but still deployed.** `ca-invoice-api` holds no custom domain (the vetcostcheck domain moved to `ca-api-vetcostcheck` on 2026-07-21) and its last blob write was that same day. It is still at `minReplicas 1`, billing around the clock — scaling it to 0 is a pending action. It still carries `AZURE_INPUT_PREFIX=az://invoices/uploads/` and `AZURE_OUTPUT_PREFIX=az://invoices/processed/`, which is why those legacy prefixes exist in the container.
 
@@ -40,13 +62,39 @@ App Insights:          ai-3c-invoice            (+ healthz-ping availability tes
 
 Storage and Azure OpenAI live in a **different** resource group, `3c_information_extraction`: storage account `3cixstorage` and Cognitive Services account `3cinfoextraction`.
 
-**Scaling** (verified per app): APIs 0.5 vCPU / 1 GiB, min 1 max 3, HTTP-based. Workers 2 vCPU / 4 GiB, min 0 max 5, KEDA on Redis queue length.
+**Scaling** (verified per app): production APIs 0.5 vCPU / 1 GiB, min 1 max 3, HTTP-based; production workers 2 vCPU / 4 GiB, min 0 max 5, KEDA on Redis queue length. Test APIs and workers are min 0 max 2.
 
-**Deployment** is `./deploy.sh <product|all> <tag>` — per-product images, not the single `invoice-app` image the phases below describe. Always pass a unique tag; `latest` won't create a new revision.
+**Deployment** is two-tier:
 
-**Blob storage prefixes** are per-product: `az://invoices/uploads-<product>/` and `az://invoices/processed-<product>/`, all inside the single `invoices` container.
+```bash
+./deploy.sh <product|all> <tag> test        # build in ACR + point the test pair at it
+scripts/promote.sh <product> <tag>          # dry run (default)
+scripts/promote.sh <product> <tag> --apply  # re-point production at that same image
+```
 
-**Artifact retention** (merged 2026-07-29): each job's upload blob and per-subdocument artifacts are deleted after a successful extraction, gated on `CLEANUP_ARTIFACTS` (default true). Result JSONs survive. Blob soft delete is on (7 days). The intended 14-day lifecycle rule on the container is **not yet applied** — see `docs/superpowers/specs/2026-07-29-artifact-retention-design.md`.
+`promote.sh` never builds — it re-points production at an image already in ACR — and refuses
+unless the tag isn't `latest`, the tree is clean, you're on `main`, and the tag is the one
+currently deployed on the product's `-test` app. `scripts/lib/tier.sh` is the single source
+of truth for every tier-dependent name. Always pass a unique tag; `latest` won't create a new
+revision. Production releases are recorded as git tags `prod-<product>-<tag>`.
+Spec: `docs/superpowers/specs/2026-08-12-staging-tier-design.md`.
+
+**Provisioning a new pair** is `scripts/provision_product.sh <product> <tag> [tier]`
+(`PROVISION_DRY_RUN=1` to preview). Note `.env` does **not** carry `REDIS_URL`,
+`KEDA_REDIS_HOST`, `REDIS_PASSWORD` or `SENTRY_DSN` — derive them from Azure first; see the
+plan's Task 6 Step 2b. The image tag must already exist in ACR, so build before provisioning.
+
+**Blob storage prefixes** are per-product and per-tier: `az://invoices/uploads-<product>/`
+and `az://invoices/processed-<product>/`, plus `-test` variants, all inside the single
+`invoices` container.
+
+**Artifact retention** (merged 2026-07-29, **live in production since 2026-08-13**): each
+job's upload blob and per-subdocument artifacts are deleted after a successful extraction,
+gated on `CLEANUP_ARTIFACTS` (default true; explicitly `false` on the test tier). Result
+JSONs survive. Blob soft delete is on (7 days). The intended 14-day lifecycle rule on the
+container is **not yet applied** — see
+`docs/superpowers/specs/2026-07-29-artifact-retention-design.md`. When it is applied, it must
+cover the `-test` prefixes too, or test artifacts accumulate indefinitely.
 
 ---
 

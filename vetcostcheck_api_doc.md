@@ -10,6 +10,31 @@ The VetCostCheck API extracts structured data from veterinary invoices (PDF). Up
 
 ---
 
+## Environments
+
+| Environment | Base URL |
+|---|---|
+| Production | `https://3cvetcostcheck.flex-capital-scale.com` |
+| Test | `https://3cvetcostcheck-test.flex-capital-scale.com` |
+
+Both environments expose an identical API. Use **Test** to validate against a change before
+it reaches production — every change is deployed there first and only promoted to production
+once verified.
+
+Three things to know about Test:
+
+- **It uses a separate API key.** Your production key will be rejected, and vice versa.
+- **It is fully isolated.** Separate job queue and separate storage, so test uploads never
+  appear in production and never consume production processing capacity.
+- **The first request after an idle period is slow.** Test runs with no always-on instance to
+  keep it cheap, so expect up to a minute on a cold start. Subsequent requests are normal
+  speed. This is expected behaviour, not a fault.
+
+All examples below use the production URL; substitute the test URL and its key to run them
+against Test.
+
+---
+
 ## Workflow
 
 The API uses an asynchronous processing model with three steps:

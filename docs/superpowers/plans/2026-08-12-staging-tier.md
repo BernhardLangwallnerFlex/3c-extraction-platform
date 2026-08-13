@@ -941,13 +941,33 @@ az containerapp list -g rg-3c-invoice --query "[?ends_with(name,'-test')].name" 
 ```
 Expected: an account name, and **no output** from the second command.
 
+- [ ] **Step 1b: Build the image first — the plan originally missed this**
+
+`provision_product.sh` creates the apps pointing at `3cix-<product>:<tag>`. That tag must
+already exist in ACR, or the apps come up unable to pull. As first written, this plan's only
+`deploy.sh` call was in Task 10, so Task 6 referenced an image nothing had built. Build all
+three before provisioning — `deploy.sh` builds in ACR and skips the not-yet-existing apps by
+design:
+
+```bash
+for p in vetcostcheck bps sanierer; do ./deploy.sh "$p" <tag> test; done
+```
+
+Confirm the tags landed before continuing:
+
+```bash
+for r in 3cix-vetcostcheck 3cix-bps 3cix-sanierer; do
+  az acr repository show-tags -n cr3cinvoice --repository $r --orderby time_desc --top 3 -o tsv
+done
+```
+
 - [ ] **Step 2: Dry-run each product first**
 
 ```bash
 set -a; source .env; set +a
 for p in vetcostcheck bps sanierer; do
   echo "--- $p ---"
-  PROVISION_DRY_RUN=1 scripts/provision_product.sh "$p" v20260812a test
+  PROVISION_DRY_RUN=1 scripts/provision_product.sh "$p" v20260813a test
 done
 ```
 Expected: for each, `API_APP=ca-api-<p>-test`, `SENTRY_ENVIRONMENT=staging`, `CLEANUP_ARTIFACTS=false`, `API_MIN_REPLICAS=0`.
@@ -960,7 +980,7 @@ Run one at a time so a failure is easy to attribute. `INVOICE_API_KEY` must be *
 set -a; source .env; set +a
 unset INVOICE_API_KEY
 for p in vetcostcheck bps sanierer; do
-  scripts/provision_product.sh "$p" v20260812a test | tee "/tmp/provision-${p}-test.log"
+  scripts/provision_product.sh "$p" v20260813a test | tee "/tmp/provision-${p}-test.log"
 done
 ```
 Expected: each run prints an API FQDN and an `INVOICE_API_KEY:` line. **Save those three keys to your password manager — they are not recoverable from the logs later.**
@@ -1231,7 +1251,7 @@ Expected: `...3cix-sanierer:v20260530a`; no porcelain output; branch `main`.
 - [ ] **Step 2: Build and deploy to test**
 
 ```bash
-./deploy.sh sanierer v20260812a test
+./deploy.sh sanierer v20260813a test
 ```
 Expected: an ACR build, then updates to `ca-api-sanierer-test` and `ca-worker-sanierer-test`.
 
@@ -1255,14 +1275,14 @@ Expected: **exit non-zero**, "is not the image currently on test". This proves g
 - [ ] **Step 5: Dry-run the real promotion**
 
 ```bash
-scripts/promote.sh sanierer v20260812a
+scripts/promote.sh sanierer v20260813a
 ```
 Expected: `DRY RUN`, listing `ca-api-sanierer` and `ca-worker-sanierer`.
 
 - [ ] **Step 6: Promote**
 
 ```bash
-scripts/promote.sh sanierer v20260812a --apply
+scripts/promote.sh sanierer v20260813a --apply
 ```
 Expected: both apps updated; a revision table printed.
 
@@ -1273,12 +1293,12 @@ az containerapp show -n ca-api-sanierer -g rg-3c-invoice \
   --query "properties.template.containers[0].image" -o tsv
 curl -s -o /dev/null -w "%{http_code}\n" https://3csanierer.flex-capital-scale.com/healthz
 ```
-Expected: `...3cix-sanierer:v20260812a` and `200`.
+Expected: `...3cix-sanierer:v20260813a` and `200`.
 
 - [ ] **Step 8: Tag the release**
 
 ```bash
-git tag prod-sanierer-v20260812a
+git tag prod-sanierer-v20260813a
 git push --tags
 ```
 
@@ -1288,7 +1308,7 @@ git push --tags
 git commit --allow-empty -m "chore: redeploy prod sanierer off May's image via test-then-promote
 
 ca-{api,worker}-sanierer ran 3cix-sanierer:v20260530a since May, missing
-artifact cleanup and every change since. Promoted v20260812a through the new
+artifact cleanup and every change since. Promoted v20260813a through the new
 path; the guard correctly refused v20260530a as not-on-test."
 ```
 

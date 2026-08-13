@@ -111,6 +111,9 @@ test/
 # Temporary files
 *.tmp
 *.bak
+# Dated .env backups (.env.bak-YYYYMMDD) do not match *.bak and would otherwise
+# sit untracked in the repo holding live secrets, one `git add -A` from a commit.
+.env.bak*
 .cache/
 temp_*/
 

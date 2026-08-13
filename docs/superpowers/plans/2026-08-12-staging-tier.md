@@ -1383,6 +1383,33 @@ git push origin main
 
 ---
 
+## Known risks for the operational tasks (6-10)
+
+Surfaced by the final whole-branch review of the Tasks 1-5 tooling. None block, but read
+before running anything against live Azure.
+
+- **Nothing in the tooling has ever executed an `az` mutation.** Every test stubs `az` or
+  short-circuits before the first real call. Task 6 is the first live execution — run the
+  `PROVISION_DRY_RUN=1` preview and read it before applying, and expect the first
+  `az containerapp create` to be where a real argument error would surface.
+- **`promote.sh --apply` is not atomic.** It updates the API app, then the worker. If the
+  first succeeds and the second fails, production is split across two images — API on the
+  new contract, worker on the old. For a contract change like the subdocument returncode,
+  that is exactly the mixed state that produces confusing customer-visible behaviour. Watch
+  the second `az` call complete; if it does not, re-run rather than assuming.
+- **The tooling guarantees prod runs the same image as test — not that test ran `main`.**
+  `deploy.sh` has no clean-tree or branch guard, so an image built from a feature branch can
+  sit on test and then be promoted from a clean `main`. Merging first is a habit, not a
+  mechanism. Highest-risk moment is Task 10, the first real use of the path.
+- **`promote.sh --force-rollback`'s error wording** distinguishes "tag missing" from "ACR
+  unreachable" by matching `az` error text that was never validated against live ACR. Both
+  paths refuse (fail-closed), so the safety property holds; only the message may mislead.
+- **`promote.sh` compares tags, not digests.** ACA stores the tag in the prod template, so
+  an overwritten tag in ACR could let a replica restart pull different bits. The unique-tag
+  convention makes this safe in practice — do not reuse a tag.
+- **Shared Azure OpenAI quota** is capped by `WORKER_MAX_REPLICAS=2` on test but not
+  eliminated. A large test batch during business hours can slow production extraction.
+
 ## Deferred dependency — do not lose this
 
 `CLEANUP_ARTIFACTS=false` on the test tier means staging artifacts are never deleted by the

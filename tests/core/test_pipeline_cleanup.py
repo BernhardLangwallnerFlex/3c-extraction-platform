@@ -33,13 +33,24 @@ def _subdoc(n):
     )
 
 
-def _make_pipeline(storage, subdoc_count=2):
+def _make_pipeline(storage, subdoc_count=2, returncodes=None):
+    """Default: every subdocument came back 100 (a normal, cleanable job).
+
+    Pass `returncodes` to describe a job where no Beleg was found — cleanup
+    must then keep the artifacts.
+    """
     pipe = object.__new__(Pipeline)
     pipe.storage = storage
     pipe.file_key = "az://invoices/uploads-bps/abc.pdf"
     pipe.subdocuments = [_subdoc(n) for n in range(1, subdoc_count + 1)]
     pipe.output_prefix = "az://invoices/processed-bps/"
     pipe.stem = "abc"
+    if returncodes is None:
+        returncodes = [100] * subdoc_count
+    pipe.extraction_result_json = {
+        "number_of_subdocuments": len(returncodes),
+        "subdocuments": [{"returncode": rc, "returncodeReasons": []} for rc in returncodes],
+    }
     return pipe
 
 
@@ -249,6 +260,12 @@ def test_cleanup_with_real_local_storage_tolerates_missing_file(tmp_path):
     ]
     pipe.output_prefix = "processed-bps"
     pipe.stem = "abc"
+    # Built directly (not via _make_pipeline), so this normal-job job needs the
+    # attribute the no-Beleg guard reads spelled out explicitly.
+    pipe.extraction_result_json = {
+        "number_of_subdocuments": 1,
+        "subdocuments": [{"returncode": 100, "returncodeReasons": []}],
+    }
 
     deleted = pipe.cleanup_storage_artifacts()
 
@@ -278,3 +295,42 @@ def test_zero_subdocuments_with_real_local_storage_keeps_upload(tmp_path):
 
     assert deleted == 0
     assert (tmp_path / upload_key).exists()
+
+
+@pytest.mark.parametrize("returncodes", [[200], [300], [200, 300], [200, 200]])
+def test_no_beleg_keeps_everything_and_warns(monkeypatch, returncodes):
+    # The case this feature exists for: a Sammeldokument with no invoice in it.
+    # It now arrives as one or more subdocuments classified 200/300 rather than
+    # as zero subdocuments, so the old guard would never fire. Keep the evidence.
+    storage = _RecordingStorage()
+    pipe = _make_pipeline(storage, subdoc_count=len(returncodes), returncodes=returncodes)
+
+    warnings = []
+    monkeypatch.setattr(
+        "core.pipeline._telemetry.warning",
+        lambda event, **kw: warnings.append((event, kw)),
+    )
+
+    assert pipe.cleanup_storage_artifacts() == 0
+    assert storage.deleted == []
+    assert [event for event, _ in warnings] == ["artifact_cleanup_skipped_no_beleg"]
+    assert warnings[0][1]["file_key"] == pipe.file_key
+
+
+def test_one_beleg_among_rejects_still_cleans_up():
+    # A mixed bundle is a normal, successful job — the Beleg was extracted.
+    storage = _RecordingStorage()
+    pipe = _make_pipeline(storage, subdoc_count=3, returncodes=[200, 100, 300])
+
+    assert pipe.cleanup_storage_artifacts() == 10  # 1 upload + 3 subdocs x 3
+
+
+def test_missing_extraction_result_keeps_everything():
+    # Defensive: cleanup running before extraction stored its result means
+    # something went wrong. Never destroy the upload on that path.
+    storage = _RecordingStorage()
+    pipe = _make_pipeline(storage, subdoc_count=1)
+    del pipe.extraction_result_json
+
+    assert pipe.cleanup_storage_artifacts() == 0
+    assert storage.deleted == []

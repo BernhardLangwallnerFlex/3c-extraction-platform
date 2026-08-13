@@ -27,6 +27,7 @@ import structlog
 _telemetry = structlog.get_logger()
 from core.prompt_building.prompt_building import build_prompt_for_analyze_document
 from core.product import ProductConfig
+from core.returncode import apply_returncode_floor
 
 from core.storage.storage import StorageBackend, LocalStorage, StorageKey
 
@@ -228,8 +229,32 @@ class Pipeline:
         # to sequential document numbers and preserve the mapping for subdocument_context lookup
         self._invoice_key_to_doc_number = {}
 
+        invoice_pages = self.analysis_dict.get("invoice_pages") or {}
+        if not invoice_pages:
+            # The analyzer found no Beleg. Emit one subdocument spanning every
+            # page instead of an empty result: extraction then classifies it
+            # (200, almost always), so the consumer always has a returncode to
+            # read. An empty `subdocuments` array is not something they can
+            # branch on, which is the whole problem this feature fixes.
+            all_pages = sorted(self.markdown_by_page)
+            if all_pages:
+                invoice_pages = {"1": all_pages}
+                _telemetry.warning(
+                    "split_no_invoice_pages_fallback",
+                    reason="analyze returned no invoice_pages — emitting one subdocument over all pages",
+                    page_count=len(all_pages),
+                )
+            else:
+                # No OCR'd pages at all: there is nothing to render into a
+                # subdocument. Bail out rather than crash on an empty image list.
+                _telemetry.warning(
+                    "split_no_pages_at_all",
+                    reason="no OCR pages available — cannot emit a fallback subdocument",
+                )
+                return
+
         with fitz.open(self.local_input_path) as doc:
-            for seq_idx, (invoice_key, page_numbers) in enumerate(self.analysis_dict["invoice_pages"].items(), start=1):
+            for seq_idx, (invoice_key, page_numbers) in enumerate(invoice_pages.items(), start=1):
                 document_number = seq_idx
                 self._invoice_key_to_doc_number[invoice_key] = document_number
 
@@ -287,6 +312,23 @@ class Pipeline:
 
     def _extract_single_subdocument(self, subdoc, processor):
         """Extract data from a single subdocument. Thread-safe."""
+        # Empty OCR input is direct evidence of unreadability, not an extracted
+        # field to derive a code from — core/returncode.py must never infer 300
+        # from what came back empty, but "there was nothing to send the model"
+        # is known before the LLM is even called. Skip the call entirely: an
+        # empty prompt would otherwise raise inside the processor and fail the
+        # whole job, for precisely the document class 300 exists for.
+        if not subdoc.markdown or not subdoc.markdown.strip():
+            _telemetry.warning(
+                "extract_skipped_empty_markdown",
+                reason="subdocument markdown is empty — OCR produced no readable text",
+                document_number=subdoc.document_number,
+            )
+            return {
+                "returncode": 300,
+                "returncodeReasons": ["Der Inhalt konnte nicht gelesen werden."],
+            }
+
         local_image = self.storage.materialize_to_local(subdoc.image_key)
         self.storage.materialize_to_local(subdoc.pdf_key)
 
@@ -330,9 +372,28 @@ class Pipeline:
             ),
             subdocument_context=subdocument_context,
         )
+        if not isinstance(result, dict):
+            # extract_json_from_response can return a list (e.g. the model
+            # replied with a bare JSON array). Neither the postprocess hook nor
+            # the returncode floor can call .get() on that — coerce to {} so
+            # they see "nothing extractable", which the floor then classifies
+            # 200 with the generic reason. That is the correct outcome: there
+            # is no evidence either way, and 200 (not a crash) is what the
+            # consumer needs to see.
+            _telemetry.warning(
+                "extract_non_dict_result_coerced",
+                reason="processor.extract returned a non-dict result",
+                result_type=type(result).__name__,
+                document_number=subdoc.document_number,
+            )
+            result = {}
         if self.product_config.postprocess_extraction is not None:
             result = self.product_config.postprocess_extraction(result)
-        return result
+        # Unconditional and last: all three products need the identical
+        # guarantee, and VCC already occupies the postprocess hook. Running
+        # after the hook means the floor judges the values the consumer will
+        # actually receive.
+        return apply_returncode_floor(result)
 
     def extract_data_from_subdocuments(self, processor):
         from concurrent.futures import ThreadPoolExecutor
@@ -387,6 +448,25 @@ class Pipeline:
             _telemetry.warning(
                 "artifact_cleanup_skipped_no_subdocuments",
                 reason="no subdocuments — vacuous extraction, keeping upload for investigation",
+                file_key=self.file_key,
+            )
+            return 0
+
+        # The split fallback (design spec layer 3b) guarantees at least one
+        # subdocument, so the guard above is now only reachable when OCR
+        # produced no pages at all. The case a human actually needs to
+        # reproduce — a Sammeldokument with no Beleg in it — now arrives as
+        # subdocuments classified 200/300. Keep those artifacts too; the result
+        # JSON alone doesn't show what the pages looked like. Distinct event
+        # name so alerting can tell this apart from the zero-subdocument case
+        # above.
+        extraction = getattr(self, "extraction_result_json", None)
+        extraction = extraction if isinstance(extraction, dict) else {}
+        subdoc_results = extraction.get("subdocuments") or []
+        if not any(isinstance(sd, dict) and sd.get("returncode") == 100 for sd in subdoc_results):
+            _telemetry.warning(
+                "artifact_cleanup_skipped_no_beleg",
+                reason="no subdocument classified 100 — keeping artifacts for investigation",
                 file_key=self.file_key,
             )
             return 0

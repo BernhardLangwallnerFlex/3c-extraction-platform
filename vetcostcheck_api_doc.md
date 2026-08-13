@@ -118,6 +118,8 @@ curl https://3cvetcostcheck.flex-capital-scale.com/job/fe9c2001-44dc-4254-a0f7-1
     "number_of_subdocuments": 3,
     "subdocuments": [
       {
+        "returncode": 100,
+        "returncodeReasons": [],
         "type": "invoice",
         "number": "28679/23-002307RP",
         "date": "2023-10-15",
@@ -157,6 +159,37 @@ curl https://3cvetcostcheck.flex-capital-scale.com/job/fe9c2001-44dc-4254-a0f7-1
 | `started` | Job is actively being processed |
 | `finished` | Extraction complete — result is in the response |
 | `failed` | Something went wrong — check the `error` field |
+
+---
+
+## Subdocument Return Codes
+
+Every entry in `subdocuments` carries a `returncode`. It is **always present**
+and is **always** one of the three values below — branch on it rather than on
+whether individual fields came back null.
+
+| Code | Meaning | What to do |
+|------|---------|------------|
+| `100` | The subdocument is an invoice, receipt or prescription | Process it normally |
+| `200` | Readable, but not an invoice — a cover letter, e-mail, photo, privacy notice, … | Do not open a Vorgang for it |
+| `300` | The content could not be read at all | Needs a human |
+
+`returncodeReasons` is a list of short German sentences explaining a `200` or
+`300`. It is empty for `100`, and non-empty whenever the code is `200` or
+`300`, so it can be pasted straight into a Storno note.
+
+Two things worth knowing:
+
+- **A `100` does not promise complete extraction.** A genuine invoice stays
+  `100` even when individual fields could not be read — those caveats go in
+  `warnings`, which keeps its existing meaning and is separate from
+  `returncodeReasons`.
+- **`subdocuments` is empty only if the file could not be scanned into any
+  pages at all.** Any file that does yield at least one page always comes
+  back with at least one subdocument to read a `returncode` from — including
+  a blank or unreadable page, which comes back as `returncode: 300`, and a
+  PDF that contains no invoice at all, which comes back as one subdocument
+  with `returncode: 200` — rather than an empty array.
 
 ---
 

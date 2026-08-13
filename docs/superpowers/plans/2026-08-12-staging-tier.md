@@ -972,6 +972,27 @@ done
 ```
 Expected: for each, `API_APP=ca-api-<p>-test`, `SENTRY_ENVIRONMENT=staging`, `CLEANUP_ARTIFACTS=false`, `API_MIN_REPLICAS=0`.
 
+- [ ] **Step 2b: Derive the four values `.env` does not carry**
+
+`.env` is a *local-dev* file. It does not contain `REDIS_URL`, `KEDA_REDIS_HOST` or
+`REDIS_PASSWORD` — those are deployment-time values that have only ever lived in the shell
+of whoever ran the original provisioning. `SENTRY_DSN` is also absent, and without it
+`SENTRY_ENVIRONMENT=staging` is inert, because `sentry_sdk.init` only runs on a non-empty
+DSN. Derive all four from Azure (the Redis pair mirrors `azure_deployment_plan.md` Phase 3;
+the DSN mirrors production so staging errors land in the same project, tagged `staging`):
+
+```bash
+RG=rg-3c-invoice
+RH=$(az redis show --name redis-3c-invoice-v2 -g $RG --query hostName -o tsv)
+RK=$(az redis list-keys --name redis-3c-invoice-v2 -g $RG --query primaryKey -o tsv)
+export REDIS_URL="rediss://:${RK}@${RH}:6380/0?ssl_cert_reqs=none"
+export KEDA_REDIS_HOST="${RH}:6380"
+export REDIS_PASSWORD="${RK}"
+export SENTRY_DSN=$(az containerapp secret show -n ca-api-bps -g $RG --secret-name sentry-dsn --query value -o tsv)
+```
+
+Check each is non-empty before continuing. Print lengths, never values.
+
 - [ ] **Step 3: Provision for real, capturing the generated API keys**
 
 Run one at a time so a failure is easy to attribute. `INVOICE_API_KEY` must be **unset** so the script generates a distinct key per app — do not let the prod key leak into staging.

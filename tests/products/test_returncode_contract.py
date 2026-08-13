@@ -39,3 +39,18 @@ def test_schema_publishes_both_fields_first(config):
     assert props["returncode"]["type"] == "integer"
     assert props["returncodeReasons"]["type"] == "array"
     assert props["returncodeReasons"]["items"] == {"type": "string"}
+
+
+def test_analyze_prompt_allows_zero_belege(config):
+    # The splitter used to invent Belege out of cover emails because the prompt
+    # never said 0 was allowed — the schema permits it, but the model never
+    # sees the schema.
+    prompt = config.analyze_prompt_builder(markdown_text="--- PAGE 1 --- x")
+    assert "'number_of_invoices': 0" in prompt
+    assert "Erfinde keine" in prompt
+    # Rendered, not template: .format() must have consumed the doubled braces.
+    assert "{{" not in prompt
+
+
+def test_analyze_schema_still_permits_zero(config):
+    assert config.analyze_output_schema["properties"]["number_of_invoices"]["minimum"] == 0

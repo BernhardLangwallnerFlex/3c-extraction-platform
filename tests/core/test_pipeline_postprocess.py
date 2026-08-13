@@ -9,6 +9,7 @@ block, or bypassed the shared method on one execution path, would slip past
 """
 from core.pipeline import Pipeline, SubdocumentArtifact
 from core.product import ProductConfig, load_product_config
+from core.returncode import GENERIC_REASON
 
 
 class _FakeStorage:
@@ -72,3 +73,33 @@ def test_pipeline_passthrough_when_no_hook():
 
     assert result["items"][0]["qty"] is None
     assert result["items"][0]["unit"] is None
+
+
+def test_pipeline_applies_returncode_floor_after_the_hook(monkeypatch):
+    # The floor is unconditional and runs last, so a product with a hook still
+    # gets the guaranteed contract — and the hook's output is what it judges.
+    monkeypatch.setenv("PRODUCT_NAME", "vetcostcheck")
+    pipe = _make_pipeline(load_product_config())
+    processor = _FakeProcessor({"items": [{"qty": None, "unit": None}]})
+
+    result = pipe._extract_single_subdocument(_SUBDOC, processor)
+
+    assert list(result)[:2] == ["returncode", "returncodeReasons"]
+    assert result["returncode"] == 100  # non-empty items are Beleg evidence
+    assert result["returncodeReasons"] == []
+    assert result["items"][0]["qty"] == 1  # the VCC hook still ran
+
+
+def test_pipeline_floor_applies_without_a_hook():
+    cfg = ProductConfig(
+        name="no_hook_test",
+        extract_prompt_builder=lambda **kwargs: "prompt",
+        extract_output_schema={},
+    )
+    pipe = _make_pipeline(cfg)
+    processor = _FakeProcessor({"type": None, "number": None, "items": []})
+
+    result = pipe._extract_single_subdocument(_SUBDOC, processor)
+
+    assert result["returncode"] == 200
+    assert result["returncodeReasons"] == [GENERIC_REASON]

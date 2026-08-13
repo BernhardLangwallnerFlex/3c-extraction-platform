@@ -27,6 +27,7 @@ import structlog
 _telemetry = structlog.get_logger()
 from core.prompt_building.prompt_building import build_prompt_for_analyze_document
 from core.product import ProductConfig
+from core.returncode import apply_returncode_floor
 
 from core.storage.storage import StorageBackend, LocalStorage, StorageKey
 
@@ -332,7 +333,11 @@ class Pipeline:
         )
         if self.product_config.postprocess_extraction is not None:
             result = self.product_config.postprocess_extraction(result)
-        return result
+        # Unconditional and last: all three products need the identical
+        # guarantee, and VCC already occupies the postprocess hook. Running
+        # after the hook means the floor judges the values the consumer will
+        # actually receive.
+        return apply_returncode_floor(result)
 
     def extract_data_from_subdocuments(self, processor):
         from concurrent.futures import ThreadPoolExecutor

@@ -312,6 +312,23 @@ class Pipeline:
 
     def _extract_single_subdocument(self, subdoc, processor):
         """Extract data from a single subdocument. Thread-safe."""
+        # Empty OCR input is direct evidence of unreadability, not an extracted
+        # field to derive a code from — core/returncode.py must never infer 300
+        # from what came back empty, but "there was nothing to send the model"
+        # is known before the LLM is even called. Skip the call entirely: an
+        # empty prompt would otherwise raise inside the processor and fail the
+        # whole job, for precisely the document class 300 exists for.
+        if not subdoc.markdown or not subdoc.markdown.strip():
+            _telemetry.warning(
+                "extract_skipped_empty_markdown",
+                reason="subdocument markdown is empty — OCR produced no readable text",
+                document_number=subdoc.document_number,
+            )
+            return {
+                "returncode": 300,
+                "returncodeReasons": ["Der Inhalt konnte nicht gelesen werden."],
+            }
+
         local_image = self.storage.materialize_to_local(subdoc.image_key)
         self.storage.materialize_to_local(subdoc.pdf_key)
 
@@ -355,6 +372,21 @@ class Pipeline:
             ),
             subdocument_context=subdocument_context,
         )
+        if not isinstance(result, dict):
+            # extract_json_from_response can return a list (e.g. the model
+            # replied with a bare JSON array). Neither the postprocess hook nor
+            # the returncode floor can call .get() on that — coerce to {} so
+            # they see "nothing extractable", which the floor then classifies
+            # 200 with the generic reason. That is the correct outcome: there
+            # is no evidence either way, and 200 (not a crash) is what the
+            # consumer needs to see.
+            _telemetry.warning(
+                "extract_non_dict_result_coerced",
+                reason="processor.extract returned a non-dict result",
+                result_type=type(result).__name__,
+                document_number=subdoc.document_number,
+            )
+            result = {}
         if self.product_config.postprocess_extraction is not None:
             result = self.product_config.postprocess_extraction(result)
         # Unconditional and last: all three products need the identical
@@ -420,14 +452,16 @@ class Pipeline:
             )
             return 0
 
-        # Task 3b guarantees at least one subdocument, so the guard above is now
-        # only reachable when OCR produced no pages at all. The case a human
-        # actually needs to reproduce — a Sammeldokument with no Beleg in it —
-        # now arrives as subdocuments classified 200/300. Keep those artifacts
-        # too; the result JSON alone doesn't show what the pages looked like.
-        # Distinct event name so alerting can tell this apart from the
-        # zero-subdocument case above.
-        extraction = getattr(self, "extraction_result_json", None) or {}
+        # The split fallback (design spec layer 3b) guarantees at least one
+        # subdocument, so the guard above is now only reachable when OCR
+        # produced no pages at all. The case a human actually needs to
+        # reproduce — a Sammeldokument with no Beleg in it — now arrives as
+        # subdocuments classified 200/300. Keep those artifacts too; the result
+        # JSON alone doesn't show what the pages looked like. Distinct event
+        # name so alerting can tell this apart from the zero-subdocument case
+        # above.
+        extraction = getattr(self, "extraction_result_json", None)
+        extraction = extraction if isinstance(extraction, dict) else {}
         subdoc_results = extraction.get("subdocuments") or []
         if not any(isinstance(sd, dict) and sd.get("returncode") == 100 for sd in subdoc_results):
             _telemetry.warning(

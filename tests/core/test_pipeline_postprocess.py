@@ -7,6 +7,8 @@ smoke tests cannot catch: a refactor that dropped the `if ... is not None`
 block, or bypassed the shared method on one execution path, would slip past
 `test_vetcostcheck_postprocess_wired` but fail here.
 """
+import pytest
+
 from core.pipeline import Pipeline, SubdocumentArtifact
 from core.product import ProductConfig, load_product_config
 from core.returncode import GENERIC_REASON
@@ -25,6 +27,20 @@ class _FakeProcessor:
 
     def extract(self, *args, **kwargs):
         return self._result
+
+
+class _RaisingProcessor:
+    """Stands in for the real LLM processor; records/fails if `extract` is
+    ever reached. Used to prove the empty-markdown short-circuit happens
+    before the processor is called at all.
+    """
+
+    def __init__(self):
+        self.called = False
+
+    def extract(self, *args, **kwargs):
+        self.called = True
+        raise AssertionError("processor.extract must not be called for empty markdown")
 
 
 def _make_pipeline(product_config):
@@ -98,6 +114,57 @@ def test_pipeline_floor_applies_without_a_hook():
     )
     pipe = _make_pipeline(cfg)
     processor = _FakeProcessor({"type": None, "number": None, "items": []})
+
+    result = pipe._extract_single_subdocument(_SUBDOC, processor)
+
+    assert result["returncode"] == 200
+    assert result["returncodeReasons"] == [GENERIC_REASON]
+
+
+@pytest.mark.parametrize("empty_markdown", ["", "   ", "\n\n  \t"])
+def test_pipeline_empty_markdown_returns_300_without_calling_processor(empty_markdown):
+    # A blank scan / photo-only page yields empty OCR markdown. This is direct
+    # evidence of unreadability, known before any LLM call — the processor
+    # must never be reached, and no ValueError("Not enough markdown text...")
+    # should escape and fail the whole job.
+    cfg = ProductConfig(
+        name="no_hook_test",
+        extract_prompt_builder=lambda **kwargs: "prompt",
+        extract_output_schema={},
+    )
+    pipe = _make_pipeline(cfg)
+    subdoc = SubdocumentArtifact(
+        document_number=1,
+        page_numbers=[1],
+        markdown=empty_markdown,
+        md_key="k.md",
+        pdf_key="k.pdf",
+        image_key="k.png",
+    )
+    processor = _RaisingProcessor()
+
+    result = pipe._extract_single_subdocument(subdoc, processor)
+
+    assert processor.called is False
+    assert result == {
+        "returncode": 300,
+        "returncodeReasons": ["Der Inhalt konnte nicht gelesen werden."],
+    }
+
+
+def test_pipeline_non_dict_extraction_result_coerced_to_generic_200():
+    # extract_json_from_response can hand back a list (the model replied with
+    # a bare JSON array). Neither the postprocess hook nor the returncode
+    # floor can call .get() on that — it must be coerced to {} before the
+    # floor runs, so the job classifies 200 with the generic reason instead
+    # of crashing with an AttributeError.
+    cfg = ProductConfig(
+        name="no_hook_test",
+        extract_prompt_builder=lambda **kwargs: "prompt",
+        extract_output_schema={},
+    )
+    pipe = _make_pipeline(cfg)
+    processor = _FakeProcessor([{"unexpected": "list"}])
 
     result = pipe._extract_single_subdocument(_SUBDOC, processor)
 

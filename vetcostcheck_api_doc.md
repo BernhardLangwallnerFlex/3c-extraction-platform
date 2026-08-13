@@ -184,9 +184,12 @@ Two things worth knowing:
   `100` even when individual fields could not be read — those caveats go in
   `warnings`, which keeps its existing meaning and is separate from
   `returncodeReasons`.
-- **`subdocuments` is never empty.** A PDF that contains no invoice at all
-  returns exactly one subdocument with `returncode: 200` rather than an empty
-  array, so there is always a code to read.
+- **`subdocuments` is empty only if the file could not be scanned into any
+  pages at all.** Any file that does yield at least one page always comes
+  back with at least one subdocument to read a `returncode` from — including
+  a blank or unreadable page, which comes back as `returncode: 300`, and a
+  PDF that contains no invoice at all, which comes back as one subdocument
+  with `returncode: 200` — rather than an empty array.
 
 ---
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: scripts/provision_product.sh <product> <image-tag>
+# Usage: scripts/provision_product.sh <product> <image-tag> [tier]
 #
-# Provisions ca-api-<product> and ca-worker-<product> in the existing
-# cae-3c-invoice environment. Idempotent: if both apps already exist, exits.
+# Provisions ca-api-<product> and ca-worker-<product> (optionally suffixed
+# for the "test" tier) in the existing cae-3c-invoice environment. Idempotent:
+# if both apps already exist, exits.
 #
 # Required env (in your shell or .env):
 #   REDIS_URL                       — full rediss:// URL (app connection)
@@ -22,18 +23,45 @@ set -euo pipefail
 # Optional env:
 #   INVOICE_API_KEY                 — generated if unset
 #   SENTRY_DSN                      — Sentry disabled if unset (secret/env omitted)
+#   PROVISION_DRY_RUN=1             — print resolved config and exit before any az call
+#                                     (namespaced so it can never be triggered by an
+#                                     inherited DRY_RUN meant for another script)
 
-PRODUCT="${1:?Usage: scripts/provision_product.sh <product> <image-tag>}"
-IMAGE_TAG="${2:?Usage: scripts/provision_product.sh <product> <image-tag>}"
+PRODUCT="${1:?Usage: scripts/provision_product.sh <product> <image-tag> [tier]}"
+IMAGE_TAG="${2:?Usage: scripts/provision_product.sh <product> <image-tag> [tier]}"
+TIER_ARG="${3:-prod}"
 
 RG="rg-3c-invoice"
 ACR_NAME="cr3cinvoice"
 ENV_NAME="cae-3c-invoice"
 
-API_APP="ca-api-${PRODUCT}"
-WORKER_APP="ca-worker-${PRODUCT}"
-QUEUE_NAME="jobs-${PRODUCT}"
-IMAGE_REPO="3cix-${PRODUCT}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/tier.sh
+source "${SCRIPT_DIR}/lib/tier.sh"
+resolve_tier_names "$PRODUCT" "$TIER_ARG"
+
+# Dry run: print the resolved configuration and stop before any az call at all
+# (no idempotency probes, no ACR lookup). This must come before every az
+# invocation below, or dry-run's output and exit code depend on Azure/az state.
+if [[ "${PROVISION_DRY_RUN:-0}" == "1" ]]; then
+  ACR_SERVER="${ACR_NAME}.azurecr.io"
+  IMAGE="${ACR_SERVER}/${IMAGE_REPO}:${IMAGE_TAG}"
+  echo "TIER=${TIER}"
+  echo "API_APP=${API_APP}"
+  echo "WORKER_APP=${WORKER_APP}"
+  echo "QUEUE_NAME=${QUEUE_NAME}"
+  echo "IMAGE=${IMAGE}"
+  echo "API_HOSTNAME=${API_HOSTNAME}"
+  echo "AZURE_INPUT_PREFIX=${AZURE_INPUT_PREFIX}"
+  echo "AZURE_OUTPUT_PREFIX=${AZURE_OUTPUT_PREFIX}"
+  echo "SENTRY_ENVIRONMENT=${SENTRY_ENVIRONMENT_VALUE}"
+  echo "CLEANUP_ARTIFACTS=${CLEANUP_ARTIFACTS_VALUE}"
+  echo "API_MIN_REPLICAS=${API_MIN_REPLICAS}"
+  echo "API_MAX_REPLICAS=${API_MAX_REPLICAS}"
+  echo "WORKER_MIN_REPLICAS=${WORKER_MIN_REPLICAS}"
+  echo "WORKER_MAX_REPLICAS=${WORKER_MAX_REPLICAS}"
+  exit 0
+fi
 
 # Idempotency: skip if both apps exist
 if az containerapp show --name "$API_APP" --resource-group "$RG" >/dev/null 2>&1 \
@@ -59,6 +87,11 @@ fi
 INVOICE_API_KEY="${INVOICE_API_KEY:-$(openssl rand -hex 32)}"
 SENTRY_DSN="${SENTRY_DSN:-}"
 
+ACR_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
+IMAGE="${ACR_SERVER}/${IMAGE_REPO}:${IMAGE_TAG}"
+
+ACR_PASS=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
+
 # Sentry is optional. Azure Container Apps rejects empty secret values, and the
 # app (core/api/main.py, core/jobs/worker.py) only calls sentry_sdk.init when
 # SENTRY_DSN is non-empty. So wire the sentry secret + env var only when set.
@@ -70,15 +103,6 @@ if [[ -n "$SENTRY_DSN" ]]; then
   SENTRY_SECRET_ARG=(sentry-dsn="$SENTRY_DSN")
   SENTRY_ENV_ARG=(SENTRY_DSN=secretref:sentry-dsn)
 fi
-
-# Per-product Azure Blob prefixes (matches existing convention: blob container "invoices")
-AZURE_INPUT_PREFIX="az://invoices/uploads-${PRODUCT}/"
-AZURE_OUTPUT_PREFIX="az://invoices/processed-${PRODUCT}/"
-
-# Resolve ACR
-ACR_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
-ACR_PASS=$(az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv)
-IMAGE="${ACR_SERVER}/${IMAGE_REPO}:${IMAGE_TAG}"
 
 # --- Provision API ---
 echo "==> Creating ${API_APP}..."
@@ -94,7 +118,7 @@ az containerapp create \
   --ingress external \
   --transport http \
   --cpu 0.5 --memory 1.0Gi \
-  --min-replicas 1 --max-replicas 3 \
+  --min-replicas "$API_MIN_REPLICAS" --max-replicas "$API_MAX_REPLICAS" \
   --secrets \
     redis-url="$REDIS_URL" \
     storage-account-key="$AZURE_STORAGE_ACCOUNT_KEY" \
@@ -119,6 +143,8 @@ az containerapp create \
     AZURE_DOCINTEL_KEY=secretref:azure-docintel-key \
     REDIS_URL=secretref:redis-url \
     INVOICE_API_KEY=secretref:invoice-api-key \
+    SENTRY_ENVIRONMENT="$SENTRY_ENVIRONMENT_VALUE" \
+    CLEANUP_ARTIFACTS="$CLEANUP_ARTIFACTS_VALUE" \
     ${SENTRY_ENV_ARG[@]+"${SENTRY_ENV_ARG[@]}"}
 
 # --- Provision Worker ---
@@ -133,7 +159,7 @@ az containerapp create \
   --registry-password "$ACR_PASS" \
   --command "python" --args "core/jobs/worker.py" \
   --cpu 2.0 --memory 4.0Gi \
-  --min-replicas 0 --max-replicas 5 \
+  --min-replicas "$WORKER_MIN_REPLICAS" --max-replicas "$WORKER_MAX_REPLICAS" \
   --secrets \
     redis-url="$REDIS_URL" \
     redis-password="$REDIS_PASSWORD" \
@@ -158,6 +184,8 @@ az containerapp create \
     AZURE_DOCINTEL_KEY=secretref:azure-docintel-key \
     REDIS_URL=secretref:redis-url \
     KEDA_REDIS_HOST="$KEDA_REDIS_HOST" \
+    SENTRY_ENVIRONMENT="$SENTRY_ENVIRONMENT_VALUE" \
+    CLEANUP_ARTIFACTS="$CLEANUP_ARTIFACTS_VALUE" \
     ${SENTRY_ENV_ARG[@]+"${SENTRY_ENV_ARG[@]}"}
 
 # --- KEDA scaler on Redis queue length ---
@@ -174,7 +202,7 @@ az containerapp update \
     "listLength=1" \
     "enableTLS=true" \
   --scale-rule-auth "password=redis-password" \
-  --min-replicas 0 --max-replicas 5
+  --min-replicas "$WORKER_MIN_REPLICAS" --max-replicas "$WORKER_MAX_REPLICAS"
 
 API_FQDN=$(az containerapp show --name "$API_APP" --resource-group "$RG" \
   --query "properties.configuration.ingress.fqdn" -o tsv)
@@ -186,6 +214,6 @@ echo "    Worker: ${WORKER_APP}"
 echo "    Queue:  ${QUEUE_NAME}"
 echo "    INVOICE_API_KEY: ${INVOICE_API_KEY}"
 echo ""
-echo "Next: map 3c${PRODUCT}.flex-capital-scale.com to ${API_APP} (custom domain + managed cert)"
+echo "Next: map ${API_HOSTNAME} to ${API_APP} (custom domain + managed cert)"
 echo "      Set scale cooldown to 1200s manually if needed:"
-echo "        az containerapp update --name ${WORKER_APP} --resource-group ${RG} --scale-rule-name redis-queue --scale-rule-type redis --min-replicas 0 --max-replicas 5"
+echo "        az containerapp update --name ${WORKER_APP} --resource-group ${RG} --scale-rule-name redis-queue --scale-rule-type redis --min-replicas ${WORKER_MIN_REPLICAS} --max-replicas ${WORKER_MAX_REPLICAS}"

@@ -36,6 +36,10 @@ ACR_NAME="cr3cinvoice"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/tier.sh
 source "${SCRIPT_DIR}/lib/tier.sh"
+# A split here splits production, not a test tier — say so in those words.
+UPDATE_SUBJECT="PRODUCTION"
+# shellcheck source=lib/az_update.sh
+source "${SCRIPT_DIR}/lib/az_update.sh"
 
 # --- Guard: never promote "latest" ---------------------------------------
 # Re-deploying an identical tag does not create a new ACA revision, so a
@@ -120,9 +124,14 @@ if [[ "$APPLY" -eq 0 ]]; then
   exit 0
 fi
 
+# Armed only now, past every guard and past the dry-run exit. Arming it earlier
+# would tack a "no app was updated" postscript onto each guard's own message,
+# which reads as a second, unrelated failure.
+install_partial_update_trap
+
 for app in "$PROD_API_APP" "$PROD_WORKER_APP"; do
   echo "==> Promoting ${app} to ${IMAGE}..."
-  az containerapp update --name "$app" --resource-group "$RG" --image "$IMAGE"
+  update_app_with_retry "$app" "$IMAGE" "$RG"
 done
 
 echo ""

@@ -104,7 +104,7 @@ def test_a_split_tier_is_reported_loudly(stub_bin, tmp_path):
     )
 
     assert proc.returncode != 0
-    assert "THE TIER IS SPLIT" in proc.stderr
+    assert "the tier IS SPLIT" in proc.stderr
     assert "ca-api-bps-test" in proc.stderr       # what did land
     assert "re-running is safe" in proc.stderr
 
@@ -115,7 +115,7 @@ def test_clean_run_says_nothing_about_splits(stub_bin, tmp_path):
     assert proc.returncode == 0
     assert calls == ["ca-api-bps-test", "ca-worker-bps-test"]
     assert "SPLIT" not in proc.stderr
-    assert "DEPLOY FAILED" not in proc.stderr
+    assert "FAILED" not in proc.stderr
 
 
 def test_failure_on_first_product_does_not_touch_later_products(stub_bin, tmp_path):

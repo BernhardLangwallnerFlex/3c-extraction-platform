@@ -27,60 +27,9 @@ PRODUCTS=("vetcostcheck" "bps" "sanierer")
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/tier.sh
 source "${SCRIPT_DIR}/scripts/lib/tier.sh"
-
-# Newline-separated, not an array: bash 3.2 (macOS default) errors on empty
-# array expansion under `set -u`.
-UPDATED_APPS=""
-
-# A product's API and worker are two separate `az` calls. `set -e` aborts on the
-# first failure, which leaves the tier split across two images — an API serving
-# new code while its worker runs old code produces results that look wrong
-# rather than absent. Say so loudly; a silent partial deploy is the dangerous one.
-report_partial_deploy() {
-  local status=$?
-  # Not `[[ ... ]] && return` — a false test yields status 1, which `set -e`
-  # would treat as a failure inside the trap itself.
-  if [[ "$status" == "0" ]]; then
-    return 0
-  fi
-  echo "" >&2
-  echo "==> DEPLOY FAILED (exit ${status})." >&2
-  if [[ -n "$UPDATED_APPS" ]]; then
-    echo "==> These apps DID receive ${IMAGE_TAG} before the failure:" >&2
-    printf '      %s\n' $UPDATED_APPS >&2
-    echo "==> Everything else is still on its previous image — THE TIER IS SPLIT." >&2
-    echo "==> Re-run the same command to finish. Updating to an image an app already" >&2
-    echo "==> runs is a no-op, so re-running is safe." >&2
-  else
-    echo "==> No app was updated." >&2
-  fi
-  return "$status"
-}
-trap report_partial_deploy EXIT
-
-# Azure intermittently answers a containerapp update with a transient 5xx
-# ("Service Unavailable") — sometimes after the update has already been applied.
-# Retrying is safe because `az containerapp update --image` is idempotent.
-update_app_with_retry() {
-  local app="$1"
-  local image="$2"
-  local attempt
-  local max_attempts=3
-
-  for (( attempt = 1; attempt <= max_attempts; attempt++ )); do
-    if az containerapp update --name "$app" --resource-group "$RG" --image "$image"; then
-      UPDATED_APPS="${UPDATED_APPS}${app}"$'\n'
-      return 0
-    fi
-    if (( attempt < max_attempts )); then
-      echo "==> WARNING: updating ${app} failed (attempt ${attempt}/${max_attempts}); retrying in $(( attempt * 15 ))s..." >&2
-      sleep $(( attempt * 15 ))
-    fi
-  done
-
-  echo "ERROR: ${app} did not accept image ${image} after ${max_attempts} attempts" >&2
-  return 1
-}
+# shellcheck source=scripts/lib/az_update.sh
+source "${SCRIPT_DIR}/scripts/lib/az_update.sh"
+install_partial_update_trap
 
 if [[ "${DEPLOY_DRY_RUN:-0}" == "1" ]]; then
   echo "== DRY RUN — nothing built or deployed =="
@@ -127,7 +76,7 @@ deploy_one() {
       continue
     fi
     echo "==> [${product}/${tier}] Updating ${app}..."
-    update_app_with_retry "$app" "$image"
+    update_app_with_retry "$app" "$image" "$RG"
   done
 }
 

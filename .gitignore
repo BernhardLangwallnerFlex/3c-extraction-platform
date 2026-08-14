@@ -56,6 +56,7 @@ document_experimentation.ipynb
 !tsconfig.json
 !products/*/extract_schema.json
 !products/*/analyze_schema.json
+!infra/lifecycle-policy.json
 credentials.json
 *_credentials.json
 *-credentials.json

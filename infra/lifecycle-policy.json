@@ -1,0 +1,69 @@
+{
+  "rules": [
+    {
+      "enabled": true,
+      "name": "expire-prod-artifacts-14d",
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": [
+            "invoices/uploads-vetcostcheck/",
+            "invoices/processed-vetcostcheck/",
+            "invoices/uploads-bps/",
+            "invoices/processed-bps/",
+            "invoices/uploads-sanierer/",
+            "invoices/processed-sanierer/"
+          ]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": { "daysAfterModificationGreaterThan": 14 }
+          }
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "name": "expire-test-artifacts-14d",
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": [
+            "invoices/uploads-vetcostcheck-test/",
+            "invoices/processed-vetcostcheck-test/",
+            "invoices/uploads-bps-test/",
+            "invoices/processed-bps-test/",
+            "invoices/uploads-sanierer-test/",
+            "invoices/processed-sanierer-test/"
+          ]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": { "daysAfterModificationGreaterThan": 14 }
+          }
+        }
+      }
+    },
+    {
+      "enabled": true,
+      "name": "expire-legacy-artifacts-14d",
+      "type": "Lifecycle",
+      "definition": {
+        "filters": {
+          "blobTypes": ["blockBlob"],
+          "prefixMatch": [
+            "invoices/uploads/",
+            "invoices/processed/"
+          ]
+        },
+        "actions": {
+          "baseBlob": {
+            "delete": { "daysAfterModificationGreaterThan": 14 }
+          }
+        }
+      }
+    }
+  ]
+}

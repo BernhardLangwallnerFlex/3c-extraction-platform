@@ -70,11 +70,40 @@ EXISTING="$(az storage account management-policy show \
   --query "policy" -o json 2>/dev/null || true)"
 
 if [[ -n "$EXISTING" && "$EXISTING" != "null" ]]; then
-  if python3 - "$POLICY_FILE" <<PY
+  # Via a temp file, not interpolated into the heredoc: the JSON is Azure's,
+  # and embedding it in a Python literal would break on the wrong quote.
+  EXISTING_FILE="$(mktemp)"
+  trap 'rm -f "$EXISTING_FILE"' EXIT
+  printf '%s' "$EXISTING" > "$EXISTING_FILE"
+
+  if python3 - "$POLICY_FILE" "$EXISTING_FILE" <<'PY'
 import json, sys
-existing = json.loads('''${EXISTING}''')
-desired = json.load(open(sys.argv[1]))
-sys.exit(0 if existing.get("rules") == desired.get("rules") else 1)
+
+
+def normalize(node):
+    """Compare intent, not Azure's echo of it.
+
+    A GET returns every optional field expanded to null and integers as floats
+    (14 -> 14.0). Comparing raw would always report "differs", so the guard
+    would demand --force on every run — which teaches the operator to always
+    pass --force, and then it guards nothing.
+    """
+    if isinstance(node, dict):
+        return {k: normalize(v) for k, v in node.items() if v is not None}
+    if isinstance(node, list):
+        return [normalize(v) for v in node]
+    if isinstance(node, float) and node.is_integer():
+        return int(node)
+    return node
+
+
+def rules_of(path):
+    doc = json.load(open(path))
+    rules = normalize(doc).get("rules", [])
+    return sorted(rules, key=lambda r: r.get("name", ""))
+
+
+sys.exit(0 if rules_of(sys.argv[2]) == rules_of(sys.argv[1]) else 1)
 PY
   then
     echo "==> A policy is already applied and matches this file. Nothing to do."

@@ -99,3 +99,90 @@ def test_prefixes_are_container_qualified_and_directory_scoped(all_prefixes):
         # slash "uploads-bps" would also swallow "uploads-bps-test".
         assert prefix.startswith("invoices/"), prefix
         assert prefix.endswith("/"), prefix
+
+
+def _stub_az(bin_dir, policy_json):
+    """An `az` that reports `policy_json` as the applied management policy."""
+    bin_dir.mkdir(exist_ok=True)
+    az = bin_dir / "az"
+    az.write_text(
+        "#!/usr/bin/env bash\n"
+        "for a in \"$@\"; do\n"
+        "  if [[ \"$a\" == \"policy\" ]]; then cat \"$STUB_POLICY\"; exit 0; fi\n"
+        "done\n"
+        "exit 0\n"
+    )
+    az.chmod(0o755)
+    path = bin_dir / "applied.json"
+    path.write_text(policy_json)
+    return path
+
+
+def _run_apply(bin_dir, stub_policy_path, *args):
+    return subprocess.run(
+        [str(REPO / "scripts" / "apply_lifecycle_policy.sh"), *args],
+        capture_output=True, text=True, cwd=REPO,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin",
+            "STUB_POLICY": str(stub_policy_path),
+        },
+    )
+
+
+def _azure_echo_of(policy):
+    """What a GET returns: optional fields expanded to null, ints as floats."""
+    rules = []
+    for rule in policy["rules"]:
+        delete = dict(rule["definition"]["actions"]["baseBlob"]["delete"])
+        delete["daysAfterModificationGreaterThan"] = float(
+            delete["daysAfterModificationGreaterThan"]
+        )
+        delete["daysAfterCreationGreaterThan"] = None
+        delete["daysAfterLastAccessTimeGreaterThan"] = None
+        rules.append({
+            "name": rule["name"],
+            "type": rule["type"],
+            "enabled": rule["enabled"],
+            "definition": {
+                "actions": {
+                    "baseBlob": {"delete": delete, "tierToArchive": None, "tierToCool": None},
+                    "snapshot": None,
+                    "version": None,
+                },
+                "filters": {
+                    "blobIndexMatch": None,
+                    "blobTypes": rule["definition"]["filters"]["blobTypes"],
+                    "prefixMatch": rule["definition"]["filters"]["prefixMatch"],
+                },
+            },
+        })
+    return {"rules": list(reversed(rules))}  # order must not matter either
+
+
+def test_an_already_applied_policy_is_recognised_as_a_match(tmp_path, policy):
+    # Azure echoes the policy back with every optional field expanded to null
+    # and 14 as 14.0. A naive comparison reports "differs" forever, so the
+    # script demands --force on every run — which teaches the operator to always
+    # pass --force, and then the clobber guard protects nothing.
+    stub = _stub_az(tmp_path / "bin", json.dumps(_azure_echo_of(policy)))
+    proc = _run_apply(tmp_path / "bin", stub)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "Nothing to do" in proc.stdout
+    assert "--force" not in proc.stderr
+
+
+def test_a_genuinely_different_policy_is_refused_without_force(tmp_path, policy):
+    foreign = {"rules": [{
+        "name": "someone-elses-rule", "type": "Lifecycle", "enabled": True,
+        "definition": {
+            "actions": {"baseBlob": {"delete": {"daysAfterModificationGreaterThan": 365}}},
+            "filters": {"blobTypes": ["blockBlob"], "prefixMatch": ["invoices/other/"]},
+        },
+    }]}
+    stub = _stub_az(tmp_path / "bin", json.dumps(foreign))
+    proc = _run_apply(tmp_path / "bin", stub)
+
+    assert proc.returncode != 0
+    assert "someone-elses-rule" in proc.stderr
+    assert "--force" in proc.stderr

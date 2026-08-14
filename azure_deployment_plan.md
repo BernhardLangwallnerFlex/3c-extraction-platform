@@ -4,7 +4,7 @@
 >
 > Everything from "Context" onward describes the **original single-product migration** from Render to Azure, executed in April 2026. Those phases are done, and the topology they describe has been superseded twice: by the multi-product refactor (May 2026) and by the vetcostcheck domain cutover (2026-07-21).
 >
-> The provisioning steps are kept because they document how the shared resources were built and remain the reference for recreating them. **Do not read them as a description of what is running.** Anything in Phases 4–6 that names `ca-invoice-api` / `ca-invoice-worker`, the `invoice-jobs` queue, or the `az://invoices/uploads/` + `az://invoices/processed/` prefixes refers to the now-idle legacy pair, not production.
+> The provisioning steps are kept because they document how the shared resources were built and remain the reference for recreating them. **Do not read them as a description of what is running.** Anything in Phases 4–6 that names `ca-invoice-api` / `ca-invoice-worker`, the `invoice-jobs` queue, or the `az://invoices/uploads/` + `az://invoices/processed/` prefixes refers to the legacy pair, which was **deleted on 2026-08-13** and no longer exists.
 >
 > When you need ground truth, query it — `az containerapp show`, not this file. A stale reading of this document sent a code reviewer to a false blocker on 2026-07-29.
 
@@ -23,7 +23,6 @@ Redis host, ACR, storage account, and one Azure OpenAI deployment.
 | `ca-api-vetcostcheck` / `ca-worker-vetcostcheck` | `jobs-vetcostcheck` | `3cix-vetcostcheck:v20260813a` | `3cvetcostcheck.flex-capital-scale.com` |
 | `ca-api-bps` / `ca-worker-bps` | `jobs-bps` | `3cix-bps:v20260813a` | `3cbps.flex-capital-scale.com` |
 | `ca-api-sanierer` / `ca-worker-sanierer` | `jobs-sanierer` | `3cix-sanierer:v20260813a` | `3csanierer.flex-capital-scale.com` |
-| `ca-invoice-api` / `ca-invoice-worker` — **LEGACY, idle** | `invoice-jobs` | `invoice-app:v20260416` | none |
 
 **Test** (provisioned 2026-08-13; `min-replicas 0` on both API and worker, so near-zero
 standing cost and a cold start on the first request after idle)
@@ -45,7 +44,9 @@ production app predated the artifact-cleanup merge (`b806d16`, 2026-07-29) — v
 July 24, bps on July 21, sanierer on May 30 — so cleanup had **never actually run in
 production** despite being on `main` for two weeks. It is live as of this promotion.
 
-**The legacy pair is idle but still deployed.** `ca-invoice-api` holds no custom domain (the vetcostcheck domain moved to `ca-api-vetcostcheck` on 2026-07-21) and its last blob write was that same day. It is still at `minReplicas 1`, billing around the clock — scaling it to 0 is a pending action. It still carries `AZURE_INPUT_PREFIX=az://invoices/uploads/` and `AZURE_OUTPUT_PREFIX=az://invoices/processed/`, which is why those legacy prefixes exist in the container.
+**The legacy pair is gone.** `ca-invoice-api` and `ca-invoice-worker` were deleted on 2026-08-13, after 23 idle days: the vetcostcheck domain had moved to `ca-api-vetcostcheck` on 2026-07-21, no custom domain remained bound, the last blob write was that same day, and the worker sat at 0 replicas. `ca-invoice-api` had been billing a replica around the clock to serve nothing. Their full configuration — including the canonical 102-rule IP allow-list that the three production APIs inherited — was exported to `~/3c-legacy-backup-20260813/` first. Note that `az` does not export secret *values*; `invoice-api-keys` was confirmed present on `ca-api-vetcostcheck` before deletion.
+
+The `az://invoices/uploads/` and `az://invoices/processed/` prefixes they wrote to still hold blobs, now covered by the 14-day lifecycle policy (see Retention below).
 
 Also in `rg-3c-invoice`, outside the extraction pipelines: `ca-vetcostcheck-ui` (0.5 vCPU / 1 GiB, min 1 max 1), plus `ca-garagenhub` and `ca-garagenhub-ui`.
 
@@ -91,10 +92,32 @@ and `az://invoices/processed-<product>/`, plus `-test` variants, all inside the 
 **Artifact retention** (merged 2026-07-29, **live in production since 2026-08-13**): each
 job's upload blob and per-subdocument artifacts are deleted after a successful extraction,
 gated on `CLEANUP_ARTIFACTS` (default true; explicitly `false` on the test tier). Result
-JSONs survive. Blob soft delete is on (7 days). The intended 14-day lifecycle rule on the
-container is **not yet applied** — see
-`docs/superpowers/specs/2026-07-29-artifact-retention-design.md`. When it is applied, it must
-cover the `-test` prefixes too, or test artifacts accumulate indefinitely.
+JSONs survive. Blob soft delete is on (7 days).
+
+### Retention
+
+**The 14-day lifecycle policy is applied** (2026-08-13). Source of truth:
+`infra/lifecycle-policy.json`, applied with `scripts/apply_lifecycle_policy.sh --apply`
+(dry-run by default; refuses to replace a differing existing policy without `--force`,
+because Azure overwrites an account's management policy wholesale rather than merging).
+
+Three rules, all enabled, all deleting 14 days after last modification:
+
+| Rule | Prefixes |
+|---|---|
+| `expire-prod-artifacts-14d` | `uploads-<product>/` + `processed-<product>/` for all three products |
+| `expire-test-artifacts-14d` | the same six with the `-test` suffix |
+| `expire-legacy-artifacts-14d` | `uploads/` + `processed/` from the deleted legacy pair |
+
+The policy is what gives per-job cleanup its endpoint: `cleanup_storage_artifacts()`
+deliberately keeps `extracted_data_*.json`, and deliberately keeps *everything* for a job
+where no subdocument came back `returncode` 100 (so a document containing no Beleg stays
+investigable). The test tier additionally runs `CLEANUP_ARTIFACTS=false`. Without this
+policy none of that would ever expire.
+
+`tests/scripts/test_lifecycle_policy.py` derives the expected prefixes from
+`scripts/lib/tier.sh`, so adding a fourth product fails the suite rather than silently
+leaving its blobs immortal. Azure evaluates lifecycle rules once per day.
 
 ---
 
@@ -174,8 +197,8 @@ Resource Group:        rg-3c-invoice
 Location:              germanywestcentral
 Container Registry:    cr3cinvoice
 ACA Environment:       cae-3c-invoice
-API Container App:     ca-invoice-api      # LEGACY — see Current State
-Worker Container App:  ca-invoice-worker   # LEGACY — see Current State
+API Container App:     ca-invoice-api      # DELETED 2026-08-13 — see Current State
+Worker Container App:  ca-invoice-worker   # DELETED 2026-08-13 — see Current State
 Redis Cache:           redis-3c-invoice-v2
 Log Analytics:         law-3c-invoice
 ```

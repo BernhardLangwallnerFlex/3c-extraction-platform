@@ -70,3 +70,37 @@ def test_a_failure_while_suppressing_does_not_mask_the_original_error(monkeypatc
 
     # The original FakeAPIError must still be what propagates.
     _run_with(monkeypatch, FakeAPIError(401), _ExplodingJob())
+
+
+class _PathologicalError(Exception):
+    """An exception whose `status_code` access itself blows up.
+
+    `is_retryable` probes `status_code` via `getattr(exc, "status_code", None)`.
+    That default only swallows `AttributeError` — if `__getattr__` raises
+    something else for that one name, it propagates straight out of
+    `is_retryable`. The suppression helper must still let the *original*
+    exception (this one) be what `process_file` re-raises, not whatever
+    `is_retryable` raised internally.
+
+    Only `status_code` is special-cased; every other missing attribute still
+    raises a plain `AttributeError` so that unrelated introspection (pytest's
+    own exception handling, `__notes__`, etc.) is unaffected.
+    """
+
+    def __getattr__(self, name):
+        if name == "status_code":
+            raise RuntimeError(f"boom while probing {name!r}")
+        raise AttributeError(name)
+
+
+def test_is_retryable_blowing_up_does_not_mask_the_original_error(monkeypatch):
+    job = _FakeJob(retries_left=2)
+
+    # The original _PathologicalError must still be what propagates, not the
+    # RuntimeError raised internally by is_retryable's attribute probe.
+    _run_with(monkeypatch, _PathologicalError("weird failure"), job)
+
+    # Nothing should have been mutated: the helper never got far enough to
+    # decide the error was permanent.
+    assert job.retries_left == 2
+    assert job.saved is False

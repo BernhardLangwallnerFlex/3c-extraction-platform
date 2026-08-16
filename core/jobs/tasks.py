@@ -155,9 +155,9 @@ def _suppress_retries_if_permanent(exc: Exception, file_id: str) -> None:
     raises: the caller is about to re-raise the real failure, and losing that
     to a bookkeeping error would be far worse than a wasted retry.
     """
-    if is_retryable(exc):
-        return
     try:
+        if is_retryable(exc):
+            return
         job = get_current_job()
         if job is None or not getattr(job, "retries_left", None):
             return

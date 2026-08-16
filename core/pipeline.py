@@ -26,6 +26,17 @@ import structlog
 # events emitted by processors.azure_processor so cost/observability tooling sees
 # the analyze step too.
 _telemetry = structlog.get_logger()
+
+# Reported to the consumer verbatim; the wording is reviewed German.
+_ANALYZE_VISION_WARNING = (
+    "Die Aufteilung des Dokuments erfolgte ohne Bildanalyse, da der Inhaltsfilter des "
+    "KI-Dienstes mindestens eine Seite abgelehnt hat. Die Zuordnung von Seiten zu Belegen "
+    "kann ungenauer sein."
+)
+_EXTRACT_VISION_WARNING = (
+    "Die Extraktion dieses Belegs erfolgte nur anhand des OCR-Textes, da der Inhaltsfilter "
+    "des KI-Dienstes das Seitenbild abgelehnt hat. Einzelne Werte können ungenauer sein."
+)
 from core.prompt_building.prompt_building import build_prompt_for_analyze_document
 from core.product import ProductConfig
 from core.returncode import apply_returncode_floor
@@ -409,7 +420,48 @@ class Pipeline:
         # guarantee, and VCC already occupies the postprocess hook. Running
         # after the hook means the floor judges the values the consumer will
         # actually receive.
-        return apply_returncode_floor(result)
+        result = apply_returncode_floor(result)
+        return self._report_quality(result)
+
+    def _report_quality(self, result: dict) -> dict:
+        """Attach qualityFlags and the German warnings for any degradation.
+
+        `qualityFlags` answers "how well did we read it?" and is deliberately
+        separate from `returncode`, which answers "is this a Beleg?". Folding
+        them together would let a badly-read invoice look like a non-invoice,
+        which auto-cancels a legitimate claim.
+        """
+        # The processor marks its own per-subdocument degradation on the result
+        # rather than on itself, because subdocuments are extracted in parallel
+        # threads sharing one processor. Pop it: it is internal.
+        extraction_dropped = bool(result.pop("_vision_dropped", False))
+        analyze_dropped = bool(getattr(self, "analyze_vision_dropped", False))
+        ocr_degraded = bool(getattr(getattr(self, "ocr_engine", None),
+                                    "single_engine_fallback", False))
+
+        flags = []
+        if analyze_dropped or extraction_dropped:
+            flags.append("VISION_DROPPED")
+        if ocr_degraded:
+            flags.append("SINGLE_ENGINE_OCR")
+
+        warnings = result.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        if analyze_dropped:
+            warnings.append(_ANALYZE_VISION_WARNING)
+        if extraction_dropped:
+            warnings.append(_EXTRACT_VISION_WARNING)
+        result["warnings"] = warnings
+
+        # Rebuild so the three metadata fields lead, in the documented order.
+        ordered = {
+            "returncode": result.pop("returncode"),
+            "returncodeReasons": result.pop("returncodeReasons"),
+            "qualityFlags": flags,
+        }
+        ordered.update(result)
+        return ordered
 
     def extract_data_from_subdocuments(self, processor):
         from concurrent.futures import ThreadPoolExecutor

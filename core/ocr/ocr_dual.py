@@ -16,6 +16,10 @@ log = structlog.get_logger()
 
 
 class DualOCRProcessor:
+    # Set by extract_text(). Class-level default so a caller that inspects it
+    # before OCR has run reads False rather than raising.
+    single_engine_fallback: bool = False
+
     def __init__(self, name="dual_ocr"):
         self.mistral = MistralOCRProcessor(name="mistral_ocr")
         self.azure = AzureDocIntelOCR(name="azure_docintel_ocr")
@@ -28,6 +32,7 @@ class DualOCRProcessor:
         If one engine fails (after its own retries), degrades to the other.
         Raises RuntimeError only if both engines fail.
         """
+        self.single_engine_fallback = False
         with ThreadPoolExecutor(max_workers=2) as pool:
             future_mistral = pool.submit(self.mistral.extract_text, invoice)
             future_azure = pool.submit(self.azure.extract_text, invoice)
@@ -43,6 +48,7 @@ class DualOCRProcessor:
                     f"Mistral OCR failed, degrading to Azure-only: {exc}",
                     level="warning",
                 )
+                self.single_engine_fallback = True
 
             try:
                 _, azure_by_page = future_azure.result()
@@ -52,6 +58,7 @@ class DualOCRProcessor:
                     f"Azure Doc Intel OCR failed, degrading to Mistral-only: {exc}",
                     level="warning",
                 )
+                self.single_engine_fallback = True
 
             if not mistral_by_page and not azure_by_page:
                 raise RuntimeError("Both OCR engines failed")

@@ -250,6 +250,18 @@ def test_vision_dropped_is_not_duplicated_when_both_stages_degrade():
     assert result["qualityFlags"] == ["VISION_DROPPED"]
 
 
+def test_computed_quality_flags_win_over_a_stray_key_in_result():
+    pipe = _pipeline()
+    processor = _FixedProcessor({
+        "number": "R-1",
+        "_vision_dropped": True,
+        "qualityFlags": ["BOGUS"],
+    })
+    result = pipe._extract_single_subdocument(_SUBDOC, processor)
+
+    assert result["qualityFlags"] == ["VISION_DROPPED"]
+
+
 def test_single_engine_ocr_is_flagged():
     pipe = _pipeline(ocr_degraded=True)
     result = pipe._extract_single_subdocument(_SUBDOC, _FixedProcessor({"number": "R-1"}))

@@ -455,6 +455,10 @@ class Pipeline:
         result["warnings"] = warnings
 
         # Rebuild so the three metadata fields lead, in the documented order.
+        # qualityFlags must be popped from result too, alongside the other two:
+        # otherwise a stray qualityFlags key in result would win the
+        # ordered.update(result) below and silently overwrite the computed flags.
+        result.pop("qualityFlags", None)
         ordered = {
             "returncode": result.pop("returncode"),
             "returncodeReasons": result.pop("returncodeReasons"),

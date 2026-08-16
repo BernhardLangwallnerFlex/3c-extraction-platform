@@ -140,7 +140,7 @@ class AzureInvoiceProcessor:
             log.info(
                 "debug_extract",
                 use_vision=use_vision,
-                num_images=(len(content_blocks) - 1),
+                num_images=(0 if vision_dropped else len(content_blocks) - 1),
                 raw_len=len(_raw),
                 has_position=('"position"' in _raw),
                 has_lvposition=('"lvPosition"' in _raw),

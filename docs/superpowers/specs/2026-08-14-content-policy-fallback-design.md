@@ -150,10 +150,22 @@ after `returncodeReasons`, so the three metadata fields lead every subdocument:
 invoice look like a non-invoice, which auto-cancels a legitimate claim — the failure mode the
 returncode design exists to avoid.
 
-`SINGLE_ENGINE_OCR` is not new behaviour: `DualOCRProcessor` has always degraded to one engine
-and fired a Sentry warning, and the consumer has never been told. This exposes an existing
-reliability property rather than adding one. It is set when `DualOCRProcessor` reports the
-degradation, and applies to every subdocument of that job.
+`SINGLE_ENGINE_OCR` instruments an existing fallback that has **never fired in production** —
+zero `ocr_engine_failed` events across all workers in the 30 days of retained logs. It is
+included anyway, deliberately, for two reasons:
+
+- The degradation is not cosmetic. `core/ocr/ocr_dual.py:24-57` continues with one engine's
+  output, and the extraction prompt explicitly instructs the model to cross-check the two OCR
+  sources and resolve disagreements against the image (*"Nutze beide OCR-Quellen, um Fehler zu
+  erkennen und zu korrigieren"*). With one source that instruction is inert, so the model
+  loses its error-detection signal on a document whose numbers matter — and today the result
+  looks entirely normal to the consumer, who is never told. Only Sentry is.
+- The field is being added for `VISION_DROPPED` regardless; a second enum value and its wiring
+  cost a few lines, whereas adding it later costs another contract change and another
+  conversation with the consumer.
+
+Thirty days is the log retention window, not the system's lifetime. Set when
+`DualOCRProcessor` reports the degradation; applies to every subdocument of that job.
 
 Values are a closed set defined here; adding one is a documented contract change. Unknown
 values must be ignored by consumers, so the set can grow without breaking them.

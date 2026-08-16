@@ -45,9 +45,9 @@ document.
 
 ## Decision
 
-Degrade to text-only and keep the document, rather than failing it. Record the degradation in
-`warnings`, which already carries extraction caveats and which the consumer already reads —
-no contract change while 3C is mid-implementation on `returncode`.
+Degrade to text-only and keep the document, rather than failing it. Record the degradation
+twice: in German prose in `warnings` for a human, and in a new machine-readable
+`qualityFlags` array for the consumer's code.
 
 ## Architecture
 
@@ -104,13 +104,61 @@ The sequence:
 request might succeed"; this sends a *different* request. Nesting it inside the retry would
 re-attempt the stripped call three times and muddle the two concepts.
 
-**Images are dropped wholesale, not bisected.** Isolating the offending page would cost
-roughly six extra low-detail calls and real complexity, to save vision on a document class
-that arrives about once a week. The analyze prompt's primary boundary signals — differing
-Belegnummer, sender, date — are textual and unaffected. Revisit only if split quality on
-degraded documents proves to be a problem in practice.
+**Images are dropped wholesale, not bisected — decided by measurement.** Isolating the
+offending page by binary search is *cheap*, not expensive: a probe omits the markdown, so
+~32 low-detail images at 212 tokens each is ≈6,800 tokens ≈ **1.5 cents**, about a third of
+one analyze call. Cost is therefore not the objection.
+
+The objection is that it buys nothing measurable. The failing document was run through analyze
+three times text-only and three times with all images except page 20:
+
+| Round | Text-only | All but page 20 |
+|---|---|---|
+| 1 | `{1:[9-14], 2:[22,23], 3:[24,25,26], 4:[28,29,30]}` | `{1:[9,10], 2:[22,23], 3:[24,25,26], 4:[28,29,30]}` |
+| 2 | `{1:[9,10], 2:[22,23], 3:[24,25,26], 4:[28,29,30]}` | identical |
+| 3 | `{1:[9,10], 2:[22,23], 3:[24,25,26], 4:[28,29,30]}` | identical |
+
+Five of six runs produced the same split; round 1's divergence reproduced as ordinary model
+variance rather than an image effect, and Belege 2–4 were identical in every run. The analyze
+prompt's primary boundary signals — differing Belegnummer, sender, date — are textual, which
+is consistent with this result.
+
+This is evidence from **one** document. Revisit if degraded documents show split problems in
+practice; the bisect remains cheap enough to add later.
 
 ### Layer 4 — reporting the degradation
+
+Two channels, because they serve different readers: German prose for a human in `warnings`,
+and a stable token for the consumer's code in `qualityFlags`.
+
+#### `qualityFlags` — new field
+
+An array of ASCII tokens, **always present**, empty when nothing degraded. Placed immediately
+after `returncodeReasons`, so the three metadata fields lead every subdocument:
+
+```json
+{ "returncode": 100, "returncodeReasons": [], "qualityFlags": ["VISION_DROPPED"], "type": "invoice", … }
+```
+
+| Flag | Meaning |
+|---|---|
+| `VISION_DROPPED` | The content filter rejected the images; this subdocument was extracted from OCR text alone |
+| `SINGLE_ENGINE_OCR` | One OCR engine failed; the text came from the other one only |
+
+**It must not be folded into `returncode`.** `returncode` answers *"is this a Beleg?"*;
+`qualityFlags` answers *"how well did we read it?"*. Conflating them would let a badly-read
+invoice look like a non-invoice, which auto-cancels a legitimate claim — the failure mode the
+returncode design exists to avoid.
+
+`SINGLE_ENGINE_OCR` is not new behaviour: `DualOCRProcessor` has always degraded to one engine
+and fired a Sentry warning, and the consumer has never been told. This exposes an existing
+reliability property rather than adding one. It is set when `DualOCRProcessor` reports the
+degradation, and applies to every subdocument of that job.
+
+Values are a closed set defined here; adding one is a documented contract change. Unknown
+values must be ignored by consumers, so the set can grow without breaking them.
+
+#### `warnings` — existing field
 
 `warnings` is a list of German strings on each subdocument. Two new entries, appended after
 the product's `postprocess_extraction` hook and after the returncode floor, so they survive
@@ -150,9 +198,27 @@ it only makes each doomed attempt fail faster.
 
 ## Consumer impact
 
-None at the contract level. `warnings` already exists, is already populated with extraction
-caveats, and is already documented as separate from `returncodeReasons`. A document that would
-previously have failed outright now returns a normal result carrying one extra warning.
+**Additive only.** `qualityFlags` is a new field; nothing existing changes shape or meaning. A
+document that would previously have failed outright now returns a normal result carrying one
+warning and one flag.
+
+This ships **in the same release as the returncode feature**, so 3C integrates both in one
+pass rather than two. That is the point of the timing: they are implementing `returncode`
+now, and a second contract change a month later costs them another cycle.
+
+`extract_schema.json` gains `qualityFlags` for all three products, which publishes it through
+Swagger, and `vetcostcheck_api_doc.md` documents both flag values.
+
+## Release
+
+**Not an independent hotfix.** `promote.sh` refuses any tag that is not currently deployed on
+the product's test app, so pushing this to production on its own would mean displacing the
+returncode build that 3C is integrating against. Both changes therefore ship as one release:
+implement on `main`, deploy to test alongside returncode, promote once 3C approves.
+
+The accepted cost is that content-policy failures continue in production until then — roughly
+one document per week, visible and recoverable, since the upload survives (cleanup runs only
+on success) and can be resubmitted.
 
 ## Testing
 
@@ -177,6 +243,16 @@ subdocument; extraction degradation puts the extraction warning on only the affe
 subdocument with no prior `warnings` key gets a well-formed list; existing warnings are
 preserved.
 
+**Pipeline — `qualityFlags`:** present and empty on a clean job; carries `VISION_DROPPED` on
+every subdocument after an analyze degradation and on only the affected one after an
+extraction degradation; carries `SINGLE_ENGINE_OCR` on every subdocument when DualOCR
+degraded; carries both, without duplicates, when both happened; sits immediately after
+`returncodeReasons` in key order.
+
+**Products:** all three `extract_schema.json` files declare `qualityFlags` with the closed
+enum, checked by the existing parameterized contract test in
+`tests/products/test_returncode_contract.py`.
+
 **Pipeline — composition:** the existing returncode-floor and VCC-postprocess tests still
 pass, proving the warning append composes with both.
 
@@ -197,8 +273,7 @@ green — the retry-policy change touches every LLM call in the pipeline.
   on retry — so the 300 s cooldown never resets. This produced the SIGTERM that made the
   reported error confusing, but it did not cause the failure. It needs its own spec and a
   scaling-rule decision.
-- **Bisecting to the offending page.** Rejected above on cost-versus-frequency grounds.
-- **A machine-readable signal for degraded extractions.** Considered and rejected: it would
-  add a contract change while 3C is implementing `returncode`. `warnings` carries it.
+- **Bisecting to the offending page.** Rejected on measured evidence, not cost — see Layer 3.
+- **An independent hotfix release.** Rejected — see Release above.
 - **Asking Azure to relax the content filter for this deployment.** A configuration and policy
   question, not a code one. Worth raising separately if the frequency rises.

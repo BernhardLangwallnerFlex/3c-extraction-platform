@@ -6,13 +6,15 @@ from core.prompt_building.prompt_building import build_prompt_from_config
 import json
 import re
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from core.llm_errors import is_retryable
 
 log = structlog.get_logger()
 
 
+# See core/llm_errors.is_retryable — permanent client errors must not be retried.
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30),
-       before_sleep=log_retry, reraise=True)
+       retry=retry_if_exception(is_retryable), before_sleep=log_retry, reraise=True)
 def _call_openai(client, model, content_blocks):
     """Call Azure OpenAI with retry on transient failures."""
     return client.chat.completions.create(

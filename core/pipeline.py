@@ -12,7 +12,8 @@ from PIL import Image
 import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from core.llm_errors import is_retryable
 from core.utils import log_retry, sampling_params
 import shutil
 import sentry_sdk
@@ -34,8 +35,11 @@ from core.storage.storage import StorageBackend, LocalStorage, StorageKey
 load_dotenv()
 
 
+# A 4xx other than 408/429 describes the request, so re-sending it unchanged
+# can only fail the same way. Retrying one cost ~5 minutes and three OCR
+# passes in production on 2026-08-14.
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30),
-       before_sleep=log_retry, reraise=True)
+       retry=retry_if_exception(is_retryable), before_sleep=log_retry, reraise=True)
 def _call_analyze_llm(client, model, content_blocks):
     """Call Azure OpenAI for document analysis with retry on transient failures."""
     return client.chat.completions.create(

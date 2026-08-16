@@ -173,3 +173,60 @@ def test_a_text_only_request_is_not_retried():
     with pytest.raises(FakeAPIError):
         call_with_vision_fallback(call_fn, None, "m", [TEXT])
     assert len(calls) == 1
+
+
+# --- the decorators actually use the predicate ----------------------------
+
+class _RaisingClient:
+    """Counts how many times the SDK entry point was reached."""
+
+    def __init__(self, exc):
+        self.calls = 0
+        self._exc = exc
+        outer = self
+
+        class _Completions:
+            def create(self, **kwargs):
+                outer.calls += 1
+                raise outer._exc
+
+        class _Chat:
+            completions = _Completions()
+
+        self.chat = _Chat()
+
+
+def test_analyze_call_does_not_retry_a_permanent_error():
+    from core.pipeline import _call_analyze_llm
+
+    client = _RaisingClient(FakeAPIError(400, body=_content_policy_body()))
+    with pytest.raises(FakeAPIError):
+        _call_analyze_llm(client, "gpt-5.4", [TEXT])
+    assert client.calls == 1
+
+
+def test_analyze_call_still_retries_a_server_error():
+    from core.pipeline import _call_analyze_llm
+
+    client = _RaisingClient(FakeAPIError(503))
+    with pytest.raises(FakeAPIError):
+        _call_analyze_llm(client, "gpt-5.4", [TEXT])
+    assert client.calls == 3
+
+
+def test_extraction_call_does_not_retry_a_permanent_error():
+    from core.processors.azure_processor import _call_openai
+
+    client = _RaisingClient(FakeAPIError(401))
+    with pytest.raises(FakeAPIError):
+        _call_openai(client, "gpt-5.4", [TEXT])
+    assert client.calls == 1
+
+
+def test_extraction_call_still_retries_a_server_error():
+    from core.processors.azure_processor import _call_openai
+
+    client = _RaisingClient(FakeAPIError(500))
+    with pytest.raises(FakeAPIError):
+        _call_openai(client, "gpt-5.4", [TEXT])
+    assert client.calls == 3

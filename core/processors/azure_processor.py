@@ -73,7 +73,7 @@ class AzureInvoiceProcessor:
         Returns:
             JSON string containing extracted invoice data
         """
-        if use_ocr and markdown_text == "" and prompt == "":
+        if use_ocr and markdown_text == "":
             raise ValueError("Not enough markdown text information to extract data from document.")
         if use_vision and not self.vision_model:
             raise ValueError("No vision model configured")

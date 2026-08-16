@@ -3,8 +3,11 @@
 Both tests drive the real functions with a stubbed Azure client, so a refactor
 that bypassed `call_with_vision_fallback` on either path would fail here.
 """
-import pytest
+from types import SimpleNamespace
 
+import fitz
+
+from core.pipeline import Pipeline
 from core.processors.azure_processor import AzureInvoiceProcessor
 
 
@@ -73,7 +76,7 @@ def test_extract_falls_back_to_text_and_marks_the_result(monkeypatch, tmp_path):
                         lambda p: [str(img)])
 
     client = _RejectImagesClient()
-    result = _processor_with(client).extract(str(img), prompt="extract this")
+    result = _processor_with(client).extract(str(img), markdown_text="OCR text", prompt="extract this")
 
     assert result["_vision_dropped"] is True
     assert len(client.blocks_seen) == 2
@@ -118,7 +121,7 @@ def test_extract_leaves_a_clean_result_unmarked(monkeypatch, tmp_path):
             self.chat = _Chat()
 
     client = _AcceptAll()
-    result = _processor_with(client).extract(str(img), prompt="extract this")
+    result = _processor_with(client).extract(str(img), markdown_text="OCR text", prompt="extract this")
 
     assert "_vision_dropped" not in result
     assert len(client.blocks_seen) == 1
@@ -127,7 +130,35 @@ def test_extract_leaves_a_clean_result_unmarked(monkeypatch, tmp_path):
 def test_pipeline_defaults_analyze_vision_dropped_to_false():
     # Several existing tests build Pipeline via object.__new__ and never call
     # analyze_document(); the attribute must still read False.
-    from core.pipeline import Pipeline
-
     assert Pipeline.analyze_vision_dropped is False
     assert object.__new__(Pipeline).analyze_vision_dropped is False
+
+
+def test_analyze_document_falls_back_to_text_and_marks_dropped(monkeypatch, tmp_path):
+    # Drives the real analyze_document() against the same image-rejecting
+    # stub client used above, so a refactor that bypassed
+    # call_with_vision_fallback on this path would fail here too.
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Seite 1")
+    pdf_path = tmp_path / "input.pdf"
+    doc.save(pdf_path)
+    doc.close()
+
+    client = _RejectImagesClient(payload='{"invoice_pages": {}}')
+    monkeypatch.setattr("core.pipeline.AzureOpenAI", lambda **kwargs: client)
+
+    pipe = object.__new__(Pipeline)
+    pipe.product_config = SimpleNamespace(analyze_prompt_builder=None)
+    pipe.markdown_with_pages_numbers = "--- PAGE 1 ---\n: seite eins"
+    pipe.file_type = "pdf"
+    pipe.local_input_path = str(pdf_path)
+    pipe.markdown_by_page = {1: "seite eins"}
+
+    pipe.analyze_document()  # must complete, not raise
+
+    assert pipe.analyze_vision_dropped is True
+    assert len(client.blocks_seen) == 2
+    assert any(b.get("type") == "image_url" for b in client.blocks_seen[0])
+    assert not any(b.get("type") == "image_url" for b in client.blocks_seen[1])
+    assert pipe.analysis_dict == {"invoice_pages": {}}

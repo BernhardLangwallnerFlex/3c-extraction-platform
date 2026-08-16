@@ -7,7 +7,7 @@ import json
 import re
 import structlog
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-from core.llm_errors import is_retryable
+from core.llm_errors import call_with_vision_fallback, is_retryable
 
 log = structlog.get_logger()
 
@@ -73,7 +73,7 @@ class AzureInvoiceProcessor:
         Returns:
             JSON string containing extracted invoice data
         """
-        if use_ocr and markdown_text == "":
+        if use_ocr and markdown_text == "" and prompt == "":
             raise ValueError("Not enough markdown text information to extract data from document.")
         if use_vision and not self.vision_model:
             raise ValueError("No vision model configured")
@@ -108,7 +108,12 @@ class AzureInvoiceProcessor:
                     }
                 )
         model = self.vision_model if use_vision else self.model
-        response = _call_openai(self.client, model, content_blocks)
+        # The model is deliberately NOT switched on fallback: dropping to
+        # self.model would change extraction behaviour on top of the
+        # degradation, and the vision model handles a text-only request fine.
+        response, vision_dropped = call_with_vision_fallback(
+            _call_openai, self.client, model, content_blocks,
+        )
 
         usage = response.usage
         prompt_tokens = usage.prompt_tokens
@@ -143,4 +148,9 @@ class AzureInvoiceProcessor:
             )
 
         json_result = extract_json_from_response(response.choices[0].message.content)
+        if vision_dropped and isinstance(json_result, dict):
+            # Rides on the result, not on self: subdocuments are extracted in
+            # parallel threads sharing one processor instance. The pipeline
+            # pops this key, so it never reaches the consumer.
+            json_result["_vision_dropped"] = True
         return json_result

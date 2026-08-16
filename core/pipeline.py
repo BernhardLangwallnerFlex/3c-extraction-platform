@@ -13,7 +13,7 @@ import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-from core.llm_errors import is_retryable
+from core.llm_errors import call_with_vision_fallback, is_retryable
 from core.utils import log_retry, sampling_params
 import shutil
 import sentry_sdk
@@ -62,6 +62,10 @@ class SubdocumentArtifact:
 
 
 class Pipeline:
+    # Set per instance by analyze_document(). Class-level default because
+    # several tests build Pipeline via object.__new__ and never analyze.
+    analyze_vision_dropped: bool = False
+
     def __init__(
         self,
         file_key: StorageKey,
@@ -210,7 +214,15 @@ class Pipeline:
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )
         analyze_model = os.getenv("OPENAI_VISION_MODEL", "gpt-5.4")
-        response = _call_analyze_llm(client, analyze_model, content_blocks)
+        response, self.analyze_vision_dropped = call_with_vision_fallback(
+            _call_analyze_llm, client, analyze_model, content_blocks,
+        )
+        if self.analyze_vision_dropped:
+            _telemetry.warning(
+                "analyze_vision_dropped",
+                reason="content filter rejected the page images — splitting from OCR text only",
+                pages=len(self.markdown_by_page),
+            )
         _usage = getattr(response, "usage", None)
         if _usage is not None:
             _telemetry.info(

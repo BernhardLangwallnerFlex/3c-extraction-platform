@@ -32,13 +32,16 @@ def test_prompt_carries_the_anti_downgrade_sentence(config):
     assert "Ein Beleg bleibt 100, auch wenn einzelne Felder nicht ermittelbar sind" in prompt
 
 
-def test_schema_publishes_both_fields_first(config):
+def test_schema_publishes_the_metadata_fields_first(config):
     props = config.extract_output_schema["properties"]
-    assert list(props)[:2] == ["returncode", "returncodeReasons"]
+    assert list(props)[:3] == ["returncode", "returncodeReasons", "qualityFlags"]
     assert props["returncode"]["enum"] == [100, 200, 300]
     assert props["returncode"]["type"] == "integer"
     assert props["returncodeReasons"]["type"] == "array"
     assert props["returncodeReasons"]["items"] == {"type": "string"}
+    flags = props["qualityFlags"]
+    assert flags["type"] == "array"
+    assert flags["items"]["enum"] == ["VISION_DROPPED", "SINGLE_ENGINE_OCR"]
 
 
 def test_analyze_prompt_allows_zero_belege(config):

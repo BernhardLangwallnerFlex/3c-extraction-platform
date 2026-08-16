@@ -3,12 +3,14 @@ import time
 from pathlib import Path
 from dotenv import load_dotenv
 import structlog
+from rq import get_current_job
 
 from core.storage.file_storage import get_file_key
 
 from core.storage.storage import LocalStorage, S3Storage, AzureBlobStorage
 from core.pipeline import Pipeline
 from core.product import load_product_config
+from core.llm_errors import is_retryable
 
 from core.ocr.ocr_dual import DualOCRProcessor
 from core.processors.azure_processor import AzureInvoiceProcessor
@@ -135,11 +137,37 @@ def process_file(file_id: str):
         total_duration = round(time.monotonic() - job_start, 2)
         log.info("job_completed", file_id=file_id, duration_s=total_duration, subdocuments=len(invoice.subdocuments))
 
-    except Exception:
+    except Exception as exc:
         log.exception("job_failed", file_id=file_id, duration_s=round(time.monotonic() - job_start, 2))
+        _suppress_retries_if_permanent(exc, file_id)
         raise
     finally:
         if invoice is not None:
             invoice.cleanup_local()
 
     return ensure_json_serializable(invoice.extraction_result_json)
+
+
+def _suppress_retries_if_permanent(exc: Exception, file_id: str) -> None:
+    """Zero the RQ retry budget for an error that can never succeed.
+
+    Each retry re-runs the whole pipeline, both OCR engines included. Never
+    raises: the caller is about to re-raise the real failure, and losing that
+    to a bookkeeping error would be far worse than a wasted retry.
+    """
+    if is_retryable(exc):
+        return
+    try:
+        job = get_current_job()
+        if job is None or not getattr(job, "retries_left", None):
+            return
+        job.retries_left = 0
+        job.save()
+        log.warning(
+            "rq_retries_suppressed",
+            file_id=file_id,
+            error_type=type(exc).__name__,
+            reason="permanent error — retrying would re-run OCR to reach the same failure",
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("rq_retry_suppression_failed", file_id=file_id)

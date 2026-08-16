@@ -205,7 +205,14 @@ def test_analyze_call_does_not_retry_a_permanent_error():
     assert client.calls == 1
 
 
-def test_analyze_call_still_retries_a_server_error():
+@pytest.fixture
+def no_backoff(monkeypatch):
+    # The retry tests assert attempt COUNTS, not timing. Without this they
+    # pay the real wait_exponential backoff (~9s) on every suite run.
+    monkeypatch.setattr("tenacity.nap.time.sleep", lambda _seconds: None)
+
+
+def test_analyze_call_still_retries_a_server_error(no_backoff):
     from core.pipeline import _call_analyze_llm
 
     client = _RaisingClient(FakeAPIError(503))
@@ -223,7 +230,7 @@ def test_extraction_call_does_not_retry_a_permanent_error():
     assert client.calls == 1
 
 
-def test_extraction_call_still_retries_a_server_error():
+def test_extraction_call_still_retries_a_server_error(no_backoff):
     from core.processors.azure_processor import _call_openai
 
     client = _RaisingClient(FakeAPIError(500))

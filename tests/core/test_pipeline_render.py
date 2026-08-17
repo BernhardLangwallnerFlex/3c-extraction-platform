@@ -2,6 +2,7 @@
 
 This is the call site that OOM-killed a BPS worker three times on 2026-08-17.
 """
+import struct
 from pathlib import Path
 
 import fitz
@@ -10,6 +11,18 @@ from PIL import Image
 
 from core.pipeline import Pipeline
 from core.rendering import CANVAS_BUDGET_PX
+
+
+def _png_dimensions(path):
+    # Production never reopens its own concatenated output through PIL after
+    # writing it — only a test's verification step would — so read the PNG
+    # header directly instead of via Image.open. That keeps this assertion
+    # from depending on PIL's own decompression-bomb guard, which is a
+    # property of PIL, not of what this pipeline is supposed to guarantee.
+    with open(path, "rb") as f:
+        header = f.read(24)
+    width, height = struct.unpack(">II", header[16:24])
+    return width, height
 
 
 class _CapturingStorage:
@@ -65,16 +78,8 @@ def test_normal_document_image_is_unchanged(tmp_path):
         assert (img.width, img.height) == (expected_w, expected_h)
 
 
-def test_oversized_document_renders_within_the_budget(tmp_path, monkeypatch):
+def test_oversized_document_renders_within_the_budget(tmp_path):
     # The failing geometry: one A4 cover page plus four large-format scans.
-    #
-    # PIL's own decompression-bomb guard (default ~89.5 Mpx, hard error past
-    # ~179 Mpx) sits below CANVAS_BUDGET_PX and exists for arbitrary/untrusted
-    # image files — not for a canvas this pipeline already computed the size
-    # of before rendering it. Production never reopens its own output through
-    # PIL, only this assertion does, so raise the guard for this test rather
-    # than for the process.
-    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", None)
     pdf = _make_pdf(
         tmp_path / "in.pdf",
         [(595.0, 841.0), (4554.0, 6516.0), (4177.0, 6095.0), (4554.0, 6516.0), (4177.0, 6095.0)],
@@ -86,8 +91,28 @@ def test_oversized_document_renders_within_the_budget(tmp_path, monkeypatch):
     img_key = pipe.subdocuments[0].image_key
     out = tmp_path / "written.png"
     out.write_bytes(pipe.storage.blobs[img_key])
-    with Image.open(out) as img:
-        assert img.width * img.height <= CANVAS_BUDGET_PX
+    width, height = _png_dimensions(out)
+    assert width * height <= CANVAS_BUDGET_PX
+
+
+def test_single_page_filling_the_budget_concatenates_without_raising(tmp_path):
+    # Finding 1: concat_page_files reopens the per-page PNGs it just wrote,
+    # and a single large-format page can land within CANVAS_BUDGET_PX while
+    # still exceeding PIL's own decompression-bomb threshold (~179 Mpx) — this
+    # HUGE_A-sized page renders to ~229 Mpx at 200 dpi, no downscale needed at
+    # all. Without the guard lifted inside concat_page_files this raised
+    # DecompressionBombError: an exception crash traded for the OOM crash
+    # this task fixes. Exactly a one-page subdocument of the failing document.
+    pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0)])
+    pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1]}, 1)
+
+    pipe.split_document_into_invoices()
+
+    img_key = pipe.subdocuments[0].image_key
+    out = tmp_path / "written.png"
+    out.write_bytes(pipe.storage.blobs[img_key])
+    width, height = _png_dimensions(out)
+    assert 0 < width * height <= CANVAS_BUDGET_PX
 
 
 def test_per_page_temp_files_do_not_survive(tmp_path):

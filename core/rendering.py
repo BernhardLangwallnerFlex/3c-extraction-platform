@@ -23,14 +23,16 @@ from PIL import Image
 _log = structlog.get_logger()
 
 # Total rendered pixels one concatenated image — or one standalone page image
-# — may occupy. 200 Mpx as RGB is 600 MB, which leaves headroom under the
-# worker's 4 GiB limit even alongside a page pixmap.
+# — may occupy. 400 Mpx as RGB is 1.2 GB; worst case, that canvas plus one
+# page alive at once, is roughly 2.4 GB against the worker's 4 GiB limit.
 #
-# Calibrated, not chosen for roundness: the largest whole file in the three
-# regression corpora renders to 141.8 Mpx at 200 dpi, and a subdocument is a
-# subset of a file. Every document that works today therefore renders at
-# exactly the dpi it renders at today, byte for byte.
-CANVAS_BUDGET_PX = 200_000_000
+# Calibrated, not chosen for roundness: measured across 441 corpus PDFs, the
+# largest bounding-box canvas — max(width) x sum(heights), what
+# concat_page_files actually allocates — is 331.4 Mpx at 200 dpi
+# (BPS_3.pdf). 400 Mpx is a 21% margin over that observed maximum. Every
+# document that works today therefore renders at exactly the dpi it renders
+# at today, byte for byte.
+CANVAS_BUDGET_PX = 400_000_000
 
 # Below roughly this resolution, body text on a scanned page stops being
 # legible to the vision model. A pathological input gets a small image rather
@@ -133,12 +135,23 @@ def concat_page_files(page_files: Sequence[tuple[Path, int, int]], out_path) -> 
 
     canvas = Image.new("RGB", (max_width, total_height), color=(255, 255, 255))
     y = 0
-    for page_path, _width, height in page_files:
-        with Image.open(page_path) as page_img:
-            # No mask: an RGBA page is converted to RGB by paste, exactly as
-            # the previous implementation did.
-            canvas.paste(page_img, (0, y))
-        y += height
+    # PIL's own decompression-bomb guard defaults to ~89.5 Mpx and raises
+    # above ~179 Mpx — below CANVAS_BUDGET_PX. These per-page files are ones
+    # this module rendered moments earlier, not untrusted input, so the guard
+    # is lifted only for the duration of this loop and restored in the
+    # finally. Left in force elsewhere: `_fix_image_orientation` opens raw
+    # customer uploads directly with Image.open and must keep it.
+    prev_limit = Image.MAX_IMAGE_PIXELS
+    Image.MAX_IMAGE_PIXELS = None
+    try:
+        for page_path, _width, height in page_files:
+            with Image.open(page_path) as page_img:
+                # No mask: an RGBA page is converted to RGB by paste, exactly
+                # as the previous implementation did.
+                canvas.paste(page_img, (0, y))
+            y += height
+    finally:
+        Image.MAX_IMAGE_PIXELS = prev_limit
 
     out_path = Path(out_path)
     canvas.save(out_path)

@@ -5,6 +5,8 @@ three bytes as RGB. A fixed dpi therefore means an unbounded memory footprint,
 which is how a five-page BPS document with 1.6 x 2.3 m pages killed a 4 GiB
 worker three times in a row on 2026-08-17.
 """
+import struct
+
 import pytest
 import fitz
 from PIL import Image
@@ -15,6 +17,11 @@ A4 = (595.0, 841.0)
 # The two page geometries from the document that caused the OOM, in points.
 HUGE_A = (4554.0, 6516.0)
 HUGE_B = (4177.0, 6095.0)
+# Neither HUGE_A nor HUGE_B alone exceeds the 400 Mpx budget (each renders to
+# ~229 Mpx at 200 dpi) — a real corpus page doesn't need to for the no-op
+# guarantee to matter. This one exists purely to exercise the
+# single-oversized-page path: no real corpus page is this large.
+OVERSIZED_SINGLE = (7000.0, 10000.0)
 
 
 def _total_px(page_sizes, dpi):
@@ -28,9 +35,9 @@ def test_pages_within_budget_return_base_dpi_unchanged():
 
 
 def test_single_oversized_page_scales_down_within_budget():
-    dpi = render_dpi_for([HUGE_A], base_dpi=200)
+    dpi = render_dpi_for([OVERSIZED_SINGLE], base_dpi=200)
     assert dpi < 200
-    assert _total_px([HUGE_A], dpi) <= CANVAS_BUDGET_PX
+    assert _total_px([OVERSIZED_SINGLE], dpi) <= CANVAS_BUDGET_PX
 
 
 def test_many_normal_pages_that_collectively_exceed_budget_scale_down():
@@ -105,10 +112,16 @@ def test_render_uses_base_dpi_when_pages_fit(tmp_path):
 
 
 def test_render_downscales_an_oversized_page(tmp_path):
-    pdf = _make_pdf(tmp_path / "in.pdf", [HUGE_A])
+    pdf = _make_pdf(tmp_path / "in.pdf", [OVERSIZED_SINGLE])
 
     (_path, width, height), = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
 
+    with fitz.open(pdf) as doc:
+        undownscaled = doc[0].get_pixmap(dpi=200)
+    # Not just within budget — actually smaller than the undownscaled render,
+    # so this test still proves a downscale happened rather than passing
+    # vacuously because the page already fit.
+    assert width * height < undownscaled.width * undownscaled.height
     assert width * height <= CANVAS_BUDGET_PX
 
 
@@ -186,3 +199,21 @@ def test_concat_holds_at_most_one_page_open_at_a_time(tmp_path, monkeypatch):
 def test_concat_rejects_an_empty_page_list(tmp_path):
     with pytest.raises(ValueError):
         concat_page_files([], tmp_path / "out.png")
+
+
+def test_concat_does_not_raise_reopening_a_page_that_fills_the_budget(tmp_path):
+    # concat_page_files reopens the per-page PNGs it just wrote. HUGE_A alone
+    # renders to ~229 Mpx at 200 dpi — no downscale needed, since that is
+    # under CANVAS_BUDGET_PX — but still well above PIL's own decompression-
+    # bomb threshold (~179 Mpx). Without the guard lifted for the duration of
+    # that reopen, this raised DecompressionBombError: an exception crash
+    # traded for the OOM crash this task fixes. Exactly a one-page
+    # subdocument of the document that caused it.
+    pdf = _make_pdf(tmp_path / "in.pdf", [HUGE_A])
+    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    out = concat_page_files(rendered, tmp_path / "out.png")
+
+    with open(out, "rb") as f:
+        width, height = struct.unpack(">II", f.read(24)[16:24])
+    assert width * height <= CANVAS_BUDGET_PX

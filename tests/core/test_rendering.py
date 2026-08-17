@@ -116,12 +116,15 @@ def test_render_downscales_an_oversized_page(tmp_path):
 
     (_path, width, height), = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
 
-    with fitz.open(pdf) as doc:
-        undownscaled = doc[0].get_pixmap(dpi=200)
     # Not just within budget — actually smaller than the undownscaled render,
     # so this test still proves a downscale happened rather than passing
-    # vacuously because the page already fit.
-    assert width * height < undownscaled.width * undownscaled.height
+    # vacuously because the page already fit. Computed arithmetically rather
+    # than by rendering the undownscaled page: at 200 dpi OVERSIZED_SINGLE is
+    # a 540 Mpx, ~1.6 GB pixmap, and the whole point of this test is not to
+    # pay that memory cost to prove a memory-bounding fix.
+    undownscaled_w, undownscaled_h = OVERSIZED_SINGLE
+    undownscaled_px = (undownscaled_w / 72 * 200) * (undownscaled_h / 72 * 200)
+    assert width * height < undownscaled_px
     assert width * height <= CANVAS_BUDGET_PX
 
 
@@ -216,4 +219,7 @@ def test_concat_does_not_raise_reopening_a_page_that_fills_the_budget(tmp_path):
 
     with open(out, "rb") as f:
         width, height = struct.unpack(">II", f.read(24)[16:24])
-    assert width * height <= CANVAS_BUDGET_PX
+    # Both bounds matter: within our budget, but still above PIL's own ~179
+    # Mpx decompression-bomb threshold — otherwise this could pass vacuously
+    # without ever exercising the guard it exists to regression-test.
+    assert 178_956_970 < width * height <= CANVAS_BUDGET_PX

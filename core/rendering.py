@@ -140,7 +140,10 @@ def concat_page_files(page_files: Sequence[tuple[Path, int, int]], out_path) -> 
     # this module rendered moments earlier, not untrusted input, so the guard
     # is lifted only for the duration of this loop and restored in the
     # finally. Left in force elsewhere: `_fix_image_orientation` opens raw
-    # customer uploads directly with Image.open and must keep it.
+    # customer uploads directly with Image.open and must keep it — though
+    # note this is a process-wide global, not a scoped one: that guarantee
+    # holds only because the two never run concurrently today, not because
+    # they structurally cannot.
     prev_limit = Image.MAX_IMAGE_PIXELS
     Image.MAX_IMAGE_PIXELS = None
     try:

@@ -6,7 +6,6 @@ import struct
 from pathlib import Path
 
 import fitz
-import pytest
 from PIL import Image
 
 from core.pipeline import Pipeline
@@ -112,7 +111,10 @@ def test_single_page_filling_the_budget_concatenates_without_raising(tmp_path):
     out = tmp_path / "written.png"
     out.write_bytes(pipe.storage.blobs[img_key])
     width, height = _png_dimensions(out)
-    assert 0 < width * height <= CANVAS_BUDGET_PX
+    # Both bounds matter: within our budget, but still above PIL's own ~179
+    # Mpx decompression-bomb threshold — otherwise this could pass vacuously
+    # without ever exercising the guard it exists to regression-test.
+    assert 178_956_970 < width * height <= CANVAS_BUDGET_PX
 
 
 def test_per_page_temp_files_do_not_survive(tmp_path):

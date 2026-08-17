@@ -1,0 +1,100 @@
+"""The subdocument image render, bounded.
+
+This is the call site that OOM-killed a BPS worker three times on 2026-08-17.
+"""
+from pathlib import Path
+
+import fitz
+import pytest
+from PIL import Image
+
+from core.pipeline import Pipeline
+from core.rendering import CANVAS_BUDGET_PX
+
+
+class _CapturingStorage:
+    def __init__(self):
+        self.blobs = {}
+
+    def write_text(self, key, text):
+        self.blobs[key] = text.encode()
+
+    def write_bytes(self, key, data, content_type=None):
+        self.blobs[key] = data
+
+
+def _make_pipeline(pdf_path, work_dir, invoice_pages, page_count):
+    pipe = object.__new__(Pipeline)
+    pipe.storage = _CapturingStorage()
+    pipe.analysis_dict = {"invoice_pages": invoice_pages}
+    pipe.file_type = "pdf"
+    pipe.local_input_path = str(pdf_path)
+    pipe.work_dir = Path(work_dir)
+    pipe.output_prefix = "az://invoices/processed-bps"
+    pipe.stem = "abc"
+    pipe.subdocuments = []
+    pipe.markdown_by_page = {n: f"seite {n}" for n in range(1, page_count + 1)}
+    return pipe
+
+
+def _make_pdf(path, page_sizes):
+    doc = fitz.open()
+    for i, (w, h) in enumerate(page_sizes):
+        doc.new_page(width=w, height=h).insert_text((72, 72), f"Seite {i + 1}")
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_normal_document_image_is_unchanged(tmp_path):
+    # The no-op guarantee at pipeline level: an A4 document still renders at
+    # 200 dpi, so the regression corpora produce the images they always have.
+    pdf = _make_pdf(tmp_path / "in.pdf", [(595.0, 841.0)] * 2)
+    pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1, 2]}, 2)
+
+    pipe.split_document_into_invoices()
+
+    with fitz.open(pdf) as doc:
+        expected_w = doc[0].get_pixmap(dpi=200).width
+        expected_h = sum(p.get_pixmap(dpi=200).height for p in doc)
+
+    img_key = pipe.subdocuments[0].image_key
+    out = tmp_path / "written.png"
+    out.write_bytes(pipe.storage.blobs[img_key])
+    with Image.open(out) as img:
+        assert (img.width, img.height) == (expected_w, expected_h)
+
+
+def test_oversized_document_renders_within_the_budget(tmp_path, monkeypatch):
+    # The failing geometry: one A4 cover page plus four large-format scans.
+    #
+    # PIL's own decompression-bomb guard (default ~89.5 Mpx, hard error past
+    # ~179 Mpx) sits below CANVAS_BUDGET_PX and exists for arbitrary/untrusted
+    # image files — not for a canvas this pipeline already computed the size
+    # of before rendering it. Production never reopens its own output through
+    # PIL, only this assertion does, so raise the guard for this test rather
+    # than for the process.
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", None)
+    pdf = _make_pdf(
+        tmp_path / "in.pdf",
+        [(595.0, 841.0), (4554.0, 6516.0), (4177.0, 6095.0), (4554.0, 6516.0), (4177.0, 6095.0)],
+    )
+    pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1, 2, 3, 4, 5]}, 5)
+
+    pipe.split_document_into_invoices()
+
+    img_key = pipe.subdocuments[0].image_key
+    out = tmp_path / "written.png"
+    out.write_bytes(pipe.storage.blobs[img_key])
+    with Image.open(out) as img:
+        assert img.width * img.height <= CANVAS_BUDGET_PX
+
+
+def test_per_page_temp_files_do_not_survive(tmp_path):
+    # They are scratch, and on the failing document they are large scratch.
+    pdf = _make_pdf(tmp_path / "in.pdf", [(595.0, 841.0)] * 3)
+    pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1, 2], "R-2": [3]}, 3)
+
+    pipe.split_document_into_invoices()
+
+    assert list(tmp_path.glob("subdoc*_page_*.png")) == []

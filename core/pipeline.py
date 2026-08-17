@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from openai import AzureOpenAI
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from core.llm_errors import call_with_vision_fallback, is_retryable
+from core.rendering import concat_page_files, render_dpi_for, render_pdf_pages_to_files
 from core.utils import log_retry, sampling_params
 import shutil
 import sentry_sdk
@@ -37,6 +38,11 @@ _EXTRACT_VISION_WARNING = (
     "Die Extraktion dieses Belegs erfolgte nur anhand des OCR-Textes, da der Inhaltsfilter "
     "des KI-Dienstes das Seitenbild abgelehnt hat. Einzelne Werte können ungenauer sein."
 )
+
+# Base render resolutions. These are what the pipeline asks for; the actual dpi
+# is whatever core.rendering can deliver inside the pixel budget.
+SUBDOC_RENDER_DPI = 200
+ANALYZE_RENDER_DPI = 150
 from core.prompt_building.prompt_building import build_prompt_for_analyze_document
 from core.product import ProductConfig
 from core.returncode import apply_returncode_floor
@@ -305,24 +311,20 @@ class Pipeline:
                 self.storage.write_bytes(pdf_key, subdoc_pdf_local.read_bytes(), content_type="application/pdf")
 
                 # 3) render pages into one concatenated image locally, then upload/store
-                page_images: list[Image.Image] = []
-                with fitz.open(subdoc_pdf_local) as subpdf:
-                    for page in subpdf:
-                        pix = page.get_pixmap(dpi=200)
-                        mode = "RGB" if pix.alpha == 0 else "RGBA"
-                        pil_image = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
-                        page_images.append(pil_image)
-
-                total_height = sum(img.height for img in page_images)
-                max_width = max(img.width for img in page_images)
-                concatenated = Image.new("RGB", (max_width, total_height), color=(255, 255, 255))
-                y = 0
-                for img in page_images:
-                    concatenated.paste(img, (0, y))
-                    y += img.height
-
+                #
+                # Rendered page by page through disk rather than accumulated in
+                # a list: a large-format scan makes "every page pixmap plus the
+                # canvas" several gigabytes, and the worker has four.
+                page_files = render_pdf_pages_to_files(
+                    subdoc_pdf_local,
+                    self.work_dir,
+                    base_dpi=SUBDOC_RENDER_DPI,
+                    prefix=f"subdoc{document_number}_page",
+                )
                 subdoc_img_local = self.work_dir / Path(img_key).name
-                concatenated.save(subdoc_img_local)
+                concat_page_files(page_files, subdoc_img_local)
+                for page_path, _width, _height in page_files:
+                    page_path.unlink(missing_ok=True)
 
                 self.storage.write_bytes(img_key, subdoc_img_local.read_bytes(), content_type="image/png")
 

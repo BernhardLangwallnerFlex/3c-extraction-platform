@@ -6,6 +6,7 @@ import struct
 from pathlib import Path
 
 import fitz
+import pytest
 from PIL import Image
 
 from core.pipeline import Pipeline
@@ -125,3 +126,48 @@ def test_per_page_temp_files_do_not_survive(tmp_path):
     pipe.split_document_into_invoices()
 
     assert list(tmp_path.glob("subdoc*_page_*.png")) == []
+
+
+def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
+    # Per-image budget: analyze sends pages as separate images, so each one is
+    # what has to fit, not their sum.
+    #
+    # Note: at ANALYZE_RENDER_DPI (150), the large page below renders to
+    # ~128.8 Mpx — comfortably under CANVAS_BUDGET_PX (400 Mpx, raised from
+    # 200 Mpx after this test was designed), so this no longer exercises an
+    # actual downscale. It still pins the no-op guarantee (real document
+    # geometry renders unchanged) and the per-page wiring (one image per
+    # page, each individually checked against the budget rather than their
+    # sum). A single page large enough to force a downscale under the 400 Mpx
+    # budget renders to well above PIL's own decompression-bomb hard limit
+    # (~179 Mpx) even after being scaled down to fit, so it cannot be opened
+    # here via plain Image.open without lifting that guard — same reason
+    # concat_page_files in core/rendering.py has to lift it.
+    import core.pipeline as pipeline
+
+    pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0), (595.0, 841.0)])
+    pipe = _make_pipeline(pdf, tmp_path, {}, 2)
+    pipe.markdown_with_pages_numbers = "text"
+    pipe.product_config = type("C", (), {"analyze_prompt_builder": None})()
+
+    captured = {}
+
+    def _fake_call(call_fn, client, model, blocks):
+        captured["blocks"] = blocks
+        raise RuntimeError("stop after building the blocks")
+
+    monkeypatch.setattr(pipeline, "call_with_vision_fallback", _fake_call)
+    monkeypatch.setattr(pipeline, "AzureOpenAI", lambda **kw: object())
+
+    with pytest.raises(RuntimeError):
+        pipe.analyze_document()
+
+    import base64
+    import io
+
+    images = [b for b in captured["blocks"] if b["type"] == "image_url"]
+    assert len(images) == 2
+    for block in images:
+        raw = base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
+        with Image.open(io.BytesIO(raw)) as img:
+            assert img.width * img.height <= CANVAS_BUDGET_PX

@@ -214,8 +214,14 @@ class Pipeline:
         if self.file_type == "pdf":
             with fitz.open(self.local_input_path) as doc:
                 for page in doc:
-                    pix = page.get_pixmap(dpi=150)
+                    # Budget applied per page: these reach the API as separate
+                    # images, so each one — not their sum — has to fit.
+                    dpi = render_dpi_for(
+                        [(page.rect.width, page.rect.height)], ANALYZE_RENDER_DPI
+                    )
+                    pix = page.get_pixmap(dpi=dpi)
                     img_bytes = pix.tobytes("png")
+                    del pix
                     b64 = base64.b64encode(img_bytes).decode("utf-8")
                     content_blocks.append({
                         "type": "image_url",

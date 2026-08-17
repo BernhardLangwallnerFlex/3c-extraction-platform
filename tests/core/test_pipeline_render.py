@@ -13,14 +13,19 @@ from core.pipeline import Pipeline
 from core.rendering import CANVAS_BUDGET_PX
 
 
-def _png_dimensions(path):
-    # Production never reopens its own concatenated output through PIL after
+def _png_dimensions(data):
+    # Production never reopens its own rendered output through PIL after
     # writing it — only a test's verification step would — so read the PNG
     # header directly instead of via Image.open. That keeps this assertion
     # from depending on PIL's own decompression-bomb guard, which is a
     # property of PIL, not of what this pipeline is supposed to guarantee.
-    with open(path, "rb") as f:
-        header = f.read(24)
+    # Accepts either a path (disk-written subdocument images) or raw PNG
+    # bytes (analyze_document's images, which only ever exist as base64
+    # inside a content block, never written to disk).
+    if isinstance(data, (str, Path)):
+        with open(data, "rb") as f:
+            data = f.read(24)
+    header = data[:24]
     width, height = struct.unpack(">II", header[16:24])
     return width, height
 
@@ -140,9 +145,11 @@ def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
     # page, each individually checked against the budget rather than their
     # sum). A single page large enough to force a downscale under the 400 Mpx
     # budget renders to well above PIL's own decompression-bomb hard limit
-    # (~179 Mpx) even after being scaled down to fit, so it cannot be opened
-    # here via plain Image.open without lifting that guard — same reason
-    # concat_page_files in core/rendering.py has to lift it.
+    # (~179 Mpx) even after being scaled down to fit, so dimensions are read
+    # via _png_dimensions rather than Image.open — same reason
+    # concat_page_files in core/rendering.py has to lift PIL's guard, and
+    # this test would otherwise trip PIL's decompression-bomb *warning*
+    # (~89 Mpx) even at the current, still-under-budget page size.
     import core.pipeline as pipeline
 
     pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0), (595.0, 841.0)])
@@ -163,11 +170,74 @@ def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
         pipe.analyze_document()
 
     import base64
-    import io
 
     images = [b for b in captured["blocks"] if b["type"] == "image_url"]
     assert len(images) == 2
     for block in images:
         raw = base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
-        with Image.open(io.BytesIO(raw)) as img:
-            assert img.width * img.height <= CANVAS_BUDGET_PX
+        width, height = _png_dimensions(raw)
+        assert width * height <= CANVAS_BUDGET_PX
+
+
+def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
+    tmp_path, monkeypatch
+):
+    # The downscale path, end to end, without ever rendering a genuinely
+    # oversized page (that would mean a real ~1.2 GB allocation inside a
+    # test whose subject is bounding memory). A spy on render_dpi_for proves
+    # the call contract instead: called once per page, each time with a
+    # single-page list (that's what makes the budget per-image rather than
+    # per-document), the page's own (width, height) in points, and
+    # ANALYZE_RENDER_DPI as the base dpi. Returning a distinctive dpi from
+    # the spy and reading the resulting PNGs back with _png_dimensions (not
+    # Image.open — nothing here is large enough to need the decompression
+    # bomb guard lifted, but there's no reason to depend on PIL's guard
+    # either) proves the returned dpi is actually the one used to render,
+    # not just computed and discarded.
+    import base64
+
+    import core.pipeline as pipeline
+
+    pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0), (595.0, 841.0)])
+    pipe = _make_pipeline(pdf, tmp_path, {}, 2)
+    pipe.markdown_with_pages_numbers = "text"
+    pipe.product_config = type("C", (), {"analyze_prompt_builder": None})()
+
+    with fitz.open(pdf) as doc:
+        page_sizes = [(page.rect.width, page.rect.height) for page in doc]
+
+    spy_calls = []
+    forced_dpi = 40
+
+    def _spy_render_dpi_for(page_sizes_arg, base_dpi):
+        spy_calls.append((page_sizes_arg, base_dpi))
+        return forced_dpi
+
+    monkeypatch.setattr(pipeline, "render_dpi_for", _spy_render_dpi_for)
+
+    captured = {}
+
+    def _fake_call(call_fn, client, model, blocks):
+        captured["blocks"] = blocks
+        raise RuntimeError("stop after building the blocks")
+
+    monkeypatch.setattr(pipeline, "call_with_vision_fallback", _fake_call)
+    monkeypatch.setattr(pipeline, "AzureOpenAI", lambda **kw: object())
+
+    with pytest.raises(RuntimeError):
+        pipe.analyze_document()
+
+    # Called once per page, each time with that page's own size alone and
+    # the analyze base dpi — never the whole document's sizes together.
+    assert spy_calls == [
+        ([size], pipeline.ANALYZE_RENDER_DPI) for size in page_sizes
+    ]
+
+    images = [b for b in captured["blocks"] if b["type"] == "image_url"]
+    assert len(images) == 2
+    with fitz.open(pdf) as doc:
+        for block, page in zip(images, doc):
+            raw = base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
+            width, height = _png_dimensions(raw)
+            expected_pix = page.get_pixmap(dpi=forced_dpi)
+            assert (width, height) == (expected_pix.width, expected_pix.height)

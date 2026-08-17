@@ -10,6 +10,8 @@ from PIL import Image
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from core.rendering import render_dpi_for
+
 _retry_log = structlog.get_logger()
 
 
@@ -187,7 +189,8 @@ def convert_file_to_images(file_path: str) -> list:
     elif file_path.lower().endswith(".pdf"):
         with fitz.open(file_path) as doc:
             for i, page in enumerate(doc):
-                pix = page.get_pixmap(dpi=150)
+                dpi = render_dpi_for([(page.rect.width, page.rect.height)], 150)
+                pix = page.get_pixmap(dpi=dpi)
                 temp_img_path = tempfile.mktemp(suffix=f"_{i}.png")
                 pix.save(temp_img_path)
                 images.append(temp_img_path)

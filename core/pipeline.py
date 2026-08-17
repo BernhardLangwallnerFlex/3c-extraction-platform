@@ -43,6 +43,7 @@ _EXTRACT_VISION_WARNING = (
 # is whatever core.rendering can deliver inside the pixel budget.
 SUBDOC_RENDER_DPI = 200
 ANALYZE_RENDER_DPI = 150
+ORIENTATION_RENDER_DPI = 150
 from core.prompt_building.prompt_building import build_prompt_for_analyze_document
 from core.product import ProductConfig
 from core.returncode import apply_returncode_floor
@@ -143,7 +144,10 @@ class Pipeline:
 
         with fitz.open(self.local_input_path) as doc:
             for i, page in enumerate(doc):
-                pix = page.get_pixmap(dpi=150)
+                dpi = render_dpi_for(
+                    [(page.rect.width, page.rect.height)], ORIENTATION_RENDER_DPI
+                )
+                pix = page.get_pixmap(dpi=dpi)
                 mode = "RGB" if pix.alpha == 0 else "RGBA"
                 img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
                 rotation = self._detect_rotation(img)

@@ -12,13 +12,52 @@
 
 ## Global Constraints
 
-- **`CANVAS_BUDGET_PX = 200_000_000`** (200 Mpx). Calibrated, not chosen for roundness: the largest whole file in the three regression corpora renders to **141.8 Mpx** at 200 dpi, and a subdocument is a subset of a file. Do not change this value.
+- **`CANVAS_BUDGET_PX = 400_000_000`** (400 Mpx). Calibrated, not chosen for roundness — see **Plan amendment 1** below for how the original 200 Mpx figure was wrong and what replaced it. Do not change this value.
+- **The budget bounds the canvas's bounding box**, `max(width) × sum(heights)`, not the sum of the individual page areas. A narrow page still costs the full canvas width in white space, so the sum-of-areas figure understates what is actually allocated. See **Plan amendment 1**.
+- **PIL's decompression-bomb guard must be lifted only around images we rendered ourselves.** `Image.MAX_IMAGE_PIXELS` defaults to ~89.5 Mpx and `Image.open` raises above 179 Mpx, which is below the budget. The override belongs inside `concat_page_files`, restored in a `finally`, so the guard stays in force for `_fix_image_orientation`, which opens raw customer uploads. See **Plan amendment 2**.
 - **`MIN_DPI = 40`.** The floor below which the result stops being legible to the vision model. A pathological input gets a small image rather than an unreadable one, *even if that means exceeding the budget*.
 - **The no-op guarantee:** a document whose pages already fit the budget must render at exactly the dpi it renders at today, producing byte-identical images. `render_dpi_for` returns `base_dpi` unchanged in that case. This is what makes the regression sweep meaningful, and it is the single most important property in this plan.
 - **No API contract change.** No new field, no change to `returncode`, `returncodeReasons`, `qualityFlags` or `warnings`. Downscaling is explicitly **not** a `qualityFlags` entry — the API downsamples large images anyway, so flagging it would train the consumer to treat a normal result as suspect.
 - Existing render dpi values are preserved as the *base*: 200 for subdocument images and Mistral OCR, 150 for analyze, orientation detection and `convert_file_to_images`.
 - German user-facing strings: none are added or changed by this work.
 - Tests live under `tests/core/`. Run with `.venv/bin/python -m pytest tests/`.
+
+## Plan amendments
+
+Both were found during Task 3 and settled with the maintainer before Task 4. The task text below still shows the original code; where it disagrees with an amendment, **the amendment governs**.
+
+### Amendment 1 — the budget was calibrated on the wrong quantity
+
+The spec justified 200 Mpx with "the largest whole file in the three regression corpora is 141.8 Mpx at 200 dpi". That figure is the **sum of the individual page areas**. The canvas `concat_page_files` actually allocates is the **bounding box**: as wide as the widest page, as tall as every page stacked. A single landscape page in an otherwise-A4 document widens all 33 pages' worth of canvas.
+
+Measured across **441 corpus PDFs**:
+
+| Quantity | Max observed | File |
+|---|---|---|
+| Sum of page areas | 227.2 Mpx | `230074677P_Splitt.pdf` |
+| **Bounding-box canvas** | **331.4 Mpx** | `BPS_3.pdf` (141.8 Mpx by the old measure — 2.34× understated) |
+
+So 200 Mpx broke the no-op guarantee on real corpus documents under *either* formula. Two changes follow:
+
+1. `render_dpi_for` budgets `max(w) × sum(h)` over the positive-area pages, not `sum(w × h)`. For a single page the two are identical, so the per-page call sites in Tasks 4 and 5 are unaffected; for uniform-width documents they are also identical.
+2. **`CANVAS_BUDGET_PX = 400_000_000`** — 21% margin over the 331.4 Mpx observed maximum. Canvas 1.2 GB; worst case, canvas plus one page, roughly 2.4 GB against the worker's 4 GiB. The failing document's 915.9 Mpx canvas lands at 132 dpi and a peak near 1.5 GB, down from 5.1 GB.
+
+### Amendment 2 — PIL's decompression-bomb guard fires in production
+
+`Image.MAX_IMAGE_PIXELS` defaults to 89,478,485 and `Image.open` raises `DecompressionBombError` above twice that (178,956,970) — **below the budget**. `concat_page_files` reopens the per-page PNGs it just wrote, so a single large-format page inside the budget raises. Verified empirically: a 4554 × 6516 pt page renders to 198.0 Mpx and `concat_page_files` raises. Left unfixed this trades an OOM crash for an exception crash.
+
+The override goes **in production code**, inside `concat_page_files`, restored in a `finally`:
+
+```python
+prev_limit = Image.MAX_IMAGE_PIXELS
+Image.MAX_IMAGE_PIXELS = None
+try:
+    ...open, paste and close each page...
+finally:
+    Image.MAX_IMAGE_PIXELS = prev_limit
+```
+
+Scoped deliberately: these are files this module rendered moments earlier, not untrusted input. `_fix_image_orientation` opens raw customer uploads directly and must keep the guard.
 
 ---
 
@@ -900,18 +939,31 @@ Expected: PASS, with a test count at least 219 + the new tests.
 
 - [ ] **Step 2: Acceptance — the document that caused the OOM**
 
-The five-page BPS document with 1.6 × 2.3 m pages, 854.7 Mpx at a fixed 200 dpi:
+`25K10201C91.pdf` in the repository root is the culprit: five pages, of which four are 4554 × 6516 pt and 4178 × 6095 pt, totalling **854.8 Mpx** at a fixed 200 dpi. (It is the same document as `~/Downloads/bps-oom-20260817-c16e5672.pdf`; measured geometry matches page for page.)
 
 ```bash
 PRODUCT_NAME=bps STORAGE_BACKEND=local CLEANUP_ARTIFACTS=false \
-  .venv/bin/python scripts/extract_local.py ~/Downloads/bps-oom-20260817-c16e5672.pdf
+  .venv/bin/python scripts/extract_local.py 25K10201C91.pdf
 ```
 
 Expected: completes without being killed, and returns **at least one subdocument**. Confirm in the logs that a `render_downscaled` event fired — if it did not, the budget was never exercised and the run proves nothing about this fix. Note the resulting dpi.
 
-It is customer data and must not be committed.
+- [ ] **Step 3: Acceptance — the two no-op controls**
 
-- [ ] **Step 3: Regression sweep — the no-op guarantee**
+`26551118700.pdf` and `26551430800.pdf`, also in the repository root, are the 33-page BPS claim files from the content-policy incident. Their bounding-box canvases at 200 dpi are **254.9 Mpx** and **191.5 Mpx** — both under the 400 Mpx budget. The first is a good control precisely because a single landscape page (1188 pt) widens its canvas to nearly twice its sum-of-areas figure, which is the effect Amendment 1 exists for.
+
+They are therefore the sharpest available test of the no-op guarantee: real production documents, near the top of the observed size range, that must render **exactly as they do today**.
+
+```bash
+PRODUCT_NAME=bps STORAGE_BACKEND=local CLEANUP_ARTIFACTS=false \
+  .venv/bin/python scripts/extract_local.py 26551118700.pdf
+```
+
+Expected: no `render_downscaled` event at all. One firing here would mean the budget is biting real documents and the calibration is wrong — stop and report rather than proceeding.
+
+All three are customer data. They are covered by the `*.pdf` rule in `.gitignore`; never commit them or paste their contents.
+
+- [ ] **Step 4: Regression sweep — the no-op guarantee at corpus scale**
 
 This is the gate that matters. Every document in the corpora should render at exactly the dpi it rendered at before, so results should be unchanged:
 
@@ -919,14 +971,16 @@ This is the gate that matters. Every document in the corpora should render at ex
 .venv/bin/python scripts/returncode_sweep.py <corpus-dir> --expect 100
 ```
 
-Run for all three corpora. Expected: green, matching the 29 PDFs / 37 subdocuments baseline. A `render_downscaled` event anywhere in the sweep means a corpus document exceeded the budget — investigate before merging, because the calibration said none should.
+Run for all three corpora. Expected: green, matching the 29 PDFs / 37 subdocuments baseline. A `render_downscaled` event anywhere in the sweep means a corpus document exceeded the budget — investigate before merging, because the calibration in Amendment 1 says none should.
 
-- [ ] **Step 4: Regression check, if its references are still valid**
+Measure the **actual** canvas, not the predicted one. Amendment 1 exists because a proxy figure was trusted over the thing being allocated; the check that would have caught it is confirming no written subdocument PNG exceeds `CANVAS_BUDGET_PX`.
+
+- [ ] **Step 5: Regression check, if its references are still valid**
 
 Run: `.venv/bin/python scripts/regression_check.py`
 If its stored references predate the returncode work they may be stale — if so, say so rather than treating a mismatch as a failure of this change.
 
-- [ ] **Step 5: Commit any evidence worth keeping**
+- [ ] **Step 6: Commit any evidence worth keeping**
 
 No code commit is expected here. Report the acceptance dpi, the sweep result, and the unit test count.
 

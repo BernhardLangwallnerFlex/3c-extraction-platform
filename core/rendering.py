@@ -16,6 +16,12 @@ from math import sqrt
 from pathlib import Path
 from typing import Sequence
 
+import fitz
+import structlog
+from PIL import Image
+
+_log = structlog.get_logger()
+
 # Total rendered pixels one concatenated image — or one standalone page image
 # — may occupy. 200 Mpx as RGB is 600 MB, which leaves headroom under the
 # worker's 4 GiB limit even alongside a page pixmap.
@@ -57,3 +63,74 @@ def render_dpi_for(
     # int() truncates, which keeps the result inside the budget rather than
     # rounding back over it.
     return max(MIN_DPI, int(base_dpi * sqrt(budget_px / total_px_at_base)))
+
+
+def render_pdf_pages_to_files(
+    pdf_path,
+    out_dir,
+    base_dpi: int,
+    budget_px: int = CANVAS_BUDGET_PX,
+    prefix: str = "page",
+) -> list[tuple[Path, int, int]]:
+    """Render every page of `pdf_path` to its own PNG under `out_dir`.
+
+    Returns (path, width_px, height_px) per page, in page order.
+
+    Exactly one page pixmap is alive at any moment: each is written to disk and
+    dropped before the next is rendered. The dpi is chosen once for the whole
+    file so that pages stay visually consistent with one another within the
+    concatenated image.
+    """
+    out_dir = Path(out_dir)
+    rendered: list[tuple[Path, int, int]] = []
+
+    with fitz.open(pdf_path) as doc:
+        dpi = render_dpi_for(
+            [(page.rect.width, page.rect.height) for page in doc], base_dpi, budget_px
+        )
+        if dpi != base_dpi:
+            _log.warning(
+                "render_downscaled",
+                reason="pages exceed the pixel budget at the base dpi",
+                base_dpi=base_dpi,
+                dpi=dpi,
+                pages=len(doc),
+                budget_px=budget_px,
+            )
+        for index, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=dpi)
+            page_path = out_dir / f"{prefix}_{index:04d}.png"
+            pix.save(str(page_path))
+            rendered.append((page_path, pix.width, pix.height))
+            del pix
+
+    return rendered
+
+
+def concat_page_files(page_files: Sequence[tuple[Path, int, int]], out_path) -> Path:
+    """Paste per-page PNGs onto one vertically concatenated canvas.
+
+    Canvas dimensions come from the sizes recorded at render time, so the
+    canvas is allocated once and each page is opened, pasted and closed in
+    turn. Peak memory is the canvas plus a single page — not the canvas plus
+    every page, which is what made a large-format document fatal.
+    """
+    if not page_files:
+        raise ValueError("concat_page_files requires at least one page")
+
+    max_width = max(width for _path, width, _height in page_files)
+    total_height = sum(height for _path, _width, height in page_files)
+
+    canvas = Image.new("RGB", (max_width, total_height), color=(255, 255, 255))
+    y = 0
+    for page_path, _width, height in page_files:
+        with Image.open(page_path) as page_img:
+            # No mask: an RGBA page is converted to RGB by paste, exactly as
+            # the previous implementation did.
+            canvas.paste(page_img, (0, y))
+        y += height
+
+    out_path = Path(out_path)
+    canvas.save(out_path)
+    canvas.close()
+    return out_path

@@ -6,8 +6,10 @@ which is how a five-page BPS document with 1.6 x 2.3 m pages killed a 4 GiB
 worker three times in a row on 2026-08-17.
 """
 import pytest
+import fitz
+from PIL import Image
 
-from core.rendering import CANVAS_BUDGET_PX, MIN_DPI, render_dpi_for
+from core.rendering import CANVAS_BUDGET_PX, MIN_DPI, render_dpi_for, concat_page_files, render_pdf_pages_to_files
 
 A4 = (595.0, 841.0)
 # The two page geometries from the document that caused the OOM, in points.
@@ -66,3 +68,121 @@ def test_real_failing_geometry_fits_the_budget():
 def test_budget_is_honoured_for_each_base_dpi(base_dpi):
     pages = [HUGE_A, HUGE_B]
     assert _total_px(pages, render_dpi_for(pages, base_dpi)) <= CANVAS_BUDGET_PX
+
+
+def _make_pdf(path, page_sizes):
+    doc = fitz.open()
+    for i, (w, h) in enumerate(page_sizes):
+        page = doc.new_page(width=w, height=h)
+        page.insert_text((72, 72), f"Seite {i + 1}")
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_render_writes_one_file_per_page_with_recorded_sizes(tmp_path):
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4, A4, A4])
+
+    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    assert len(rendered) == 3
+    for page_path, width, height in rendered:
+        assert page_path.exists()
+        with Image.open(page_path) as img:
+            assert (img.width, img.height) == (width, height)
+
+
+def test_render_uses_base_dpi_when_pages_fit(tmp_path):
+    # The no-op guarantee, end to end: a normal page renders at exactly the
+    # size a fixed 200 dpi would have produced.
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4])
+
+    (_path, width, height), = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    with fitz.open(pdf) as doc:
+        expected = doc[0].get_pixmap(dpi=200)
+    assert (width, height) == (expected.width, expected.height)
+
+
+def test_render_downscales_an_oversized_page(tmp_path):
+    pdf = _make_pdf(tmp_path / "in.pdf", [HUGE_A])
+
+    (_path, width, height), = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    assert width * height <= CANVAS_BUDGET_PX
+
+
+def test_concat_produces_expected_canvas_dimensions(tmp_path):
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4, (300.0, 400.0), A4])
+    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    out = concat_page_files(rendered, tmp_path / "out.png")
+
+    with Image.open(out) as img:
+        assert img.width == max(w for _, w, _ in rendered)
+        assert img.height == sum(h for _, _, h in rendered)
+        assert img.mode == "RGB"
+
+
+def test_concat_matches_the_previous_implementation(tmp_path):
+    # The old code rendered every page into a list, then pasted them onto a
+    # canvas sized from that list. Same pixels, different memory profile.
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4, A4])
+
+    with fitz.open(pdf) as doc:
+        old_pages = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=200)
+            mode = "RGB" if pix.alpha == 0 else "RGBA"
+            old_pages.append(Image.frombytes(mode, [pix.width, pix.height], pix.samples))
+    old = Image.new(
+        "RGB",
+        (max(i.width for i in old_pages), sum(i.height for i in old_pages)),
+        color=(255, 255, 255),
+    )
+    y = 0
+    for img in old_pages:
+        old.paste(img, (0, y))
+        y += img.height
+
+    new_path = concat_page_files(
+        render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200), tmp_path / "new.png"
+    )
+    with Image.open(new_path) as new:
+        assert new.convert("RGB").tobytes() == old.tobytes()
+
+
+def test_concat_holds_at_most_one_page_open_at_a_time(tmp_path, monkeypatch):
+    # The whole point of the change: the canvas plus one page, not the canvas
+    # plus every page. Asserted through a counting fake, not by measuring RSS.
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4] * 6)
+    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    import core.rendering as rendering
+
+    real_open = rendering.Image.open
+    live = {"now": 0, "max": 0}
+
+    class _Tracked:
+        def __init__(self, path):
+            self._img = real_open(path)
+
+        def __enter__(self):
+            live["now"] += 1
+            live["max"] = max(live["max"], live["now"])
+            return self._img.__enter__()
+
+        def __exit__(self, *exc):
+            live["now"] -= 1
+            return self._img.__exit__(*exc)
+
+    monkeypatch.setattr(rendering.Image, "open", _Tracked)
+
+    concat_page_files(rendered, tmp_path / "out.png")
+
+    assert live["max"] == 1
+
+
+def test_concat_rejects_an_empty_page_list(tmp_path):
+    with pytest.raises(ValueError):
+        concat_page_files([], tmp_path / "out.png")

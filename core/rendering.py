@@ -47,6 +47,16 @@ CANVAS_BUDGET_PX = 200_000_000
 # than an unreadable one, even where that means exceeding the budget.
 MIN_DPI = 40
 
+# The analyze step sends one image per page with "detail": "low", which the API
+# downsamples to roughly 512px tiles — so resolution beyond a legible page scan
+# is bought and thrown away. Measured: a single large-format page produced a
+# 67 MB PNG, and holding five of them as base64 put the analyze loop at 2.41 GB,
+# the pipeline's ceiling once the split site was bounded.
+#
+# 8 Mpx leaves every ordinary page untouched — A4 at 150 dpi is 2.2 Mpx and A3
+# is 4.4 Mpx — while capping the pathological ones.
+ANALYZE_BUDGET_PX = 8_000_000
+
 
 def render_dpi_for(
     page_sizes: Sequence[tuple[float, float]],

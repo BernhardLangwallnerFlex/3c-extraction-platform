@@ -10,7 +10,7 @@ import pytest
 from PIL import Image
 
 from core.pipeline import Pipeline
-from core.rendering import CANVAS_BUDGET_PX
+from core.rendering import ANALYZE_BUDGET_PX, CANVAS_BUDGET_PX, MIN_DPI, render_dpi_for
 
 
 def _png_dimensions(data):
@@ -135,22 +135,25 @@ def test_per_page_temp_files_do_not_survive(tmp_path):
 
 def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
     # Per-image budget: analyze sends pages as separate images, so each one is
-    # what has to fit, not their sum.
+    # what has to fit, not their sum. Unlike the subdocument render, analyze
+    # pages are checked against ANALYZE_BUDGET_PX (8 Mpx), not CANVAS_BUDGET_PX
+    # (200 Mpx) — analyze's images go to the API with "detail": "low" and get
+    # downsampled to ~512px tiles regardless, so there is nothing to buy by
+    # rendering them any larger.
     #
-    # Note: at ANALYZE_RENDER_DPI (150), the large page below renders to
-    # ~128.8 Mpx — comfortably under CANVAS_BUDGET_PX (200 Mpx, the budget
-    # calibrated against real subdocument canvases; it briefly went to 400
-    # Mpx and back — see core/rendering.py), so this no longer exercises an
-    # actual downscale. It still pins the no-op guarantee (real document
-    # geometry renders unchanged) and the per-page wiring (one image per
-    # page, each individually checked against the budget rather than their
-    # sum). A single page large enough to force a downscale under this
-    # budget renders to well above PIL's own decompression-bomb hard limit
-    # (~179 Mpx) even after being scaled down to fit, so dimensions are read
-    # via _png_dimensions rather than Image.open — same reason
-    # concat_page_files in core/rendering.py has to lift PIL's guard, and
-    # this test would otherwise trip PIL's decompression-bomb *warning*
-    # (~89 Mpx) even at the current, still-under-budget page size.
+    # At ANALYZE_RENDER_DPI (150), the large page below renders to ~128.8 Mpx
+    # before downscaling, well above the 8 Mpx budget, so this exercises a
+    # real downscale. Note this exact page (the real BPS crash geometry, 1.6 x
+    # 2.3 m) can't be brought under 8 Mpx without also dropping below
+    # MIN_DPI's legibility floor (40) — fitting it into ANALYZE_BUDGET_PX
+    # alone would need ~37 dpi. render_dpi_for's documented contract is that
+    # MIN_DPI wins in that case "even where that means exceeding the budget",
+    # so the true ceiling here is the MIN_DPI-floored render (~9.16 Mpx,
+    # still a ~14x reduction from the unbounded ~128.8 Mpx), not
+    # ANALYZE_BUDGET_PX itself. Dimensions are read via _png_dimensions
+    # rather than Image.open for consistency with the other tests in this
+    # file, and because production never reopens its own rendered output
+    # through PIL either.
     import core.pipeline as pipeline
 
     pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0), (595.0, 841.0)])
@@ -174,10 +177,19 @@ def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
 
     images = [b for b in captured["blocks"] if b["type"] == "image_url"]
     assert len(images) == 2
-    for block in images:
-        raw = base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
-        width, height = _png_dimensions(raw)
-        assert width * height <= CANVAS_BUDGET_PX
+    with fitz.open(pdf) as doc:
+        for block, page in zip(images, doc):
+            raw = base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
+            width, height = _png_dimensions(raw)
+            expected_dpi = render_dpi_for(
+                [(page.rect.width, page.rect.height)],
+                pipeline.ANALYZE_RENDER_DPI,
+                budget_px=ANALYZE_BUDGET_PX,
+            )
+            expected_pix = page.get_pixmap(dpi=expected_dpi)
+            assert (width, height) == (expected_pix.width, expected_pix.height)
+            # Massively reduced from the unbounded ~128.8 Mpx render either way.
+            assert width * height <= max(ANALYZE_BUDGET_PX, 10_000_000)
 
 
 def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
@@ -210,8 +222,8 @@ def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
     spy_calls = []
     forced_dpi = 40
 
-    def _spy_render_dpi_for(page_sizes_arg, base_dpi):
-        spy_calls.append((page_sizes_arg, base_dpi))
+    def _spy_render_dpi_for(page_sizes_arg, base_dpi, budget_px=CANVAS_BUDGET_PX):
+        spy_calls.append((page_sizes_arg, base_dpi, budget_px))
         return forced_dpi
 
     monkeypatch.setattr(pipeline, "render_dpi_for", _spy_render_dpi_for)
@@ -228,10 +240,11 @@ def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
     with pytest.raises(RuntimeError):
         pipe.analyze_document()
 
-    # Called once per page, each time with that page's own size alone and
-    # the analyze base dpi — never the whole document's sizes together.
+    # Called once per page, each time with that page's own size alone, the
+    # analyze base dpi, and analyze's own (much smaller) budget — never the
+    # whole document's sizes together and never the subdocument canvas budget.
     assert spy_calls == [
-        ([size], pipeline.ANALYZE_RENDER_DPI) for size in page_sizes
+        ([size], pipeline.ANALYZE_RENDER_DPI, ANALYZE_BUDGET_PX) for size in page_sizes
     ]
 
     images = [b for b in captured["blocks"] if b["type"] == "image_url"]
@@ -242,3 +255,99 @@ def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
             width, height = _png_dimensions(raw)
             expected_pix = page.get_pixmap(dpi=forced_dpi)
             assert (width, height) == (expected_pix.width, expected_pix.height)
+
+
+def test_analyze_ordinary_pages_are_a_no_op_under_the_analyze_budget(tmp_path, monkeypatch):
+    # The property that keeps ANALYZE_BUDGET_PX safe to ship: A4 (595 x 841 pt)
+    # is 2.2 Mpx and A3 (842 x 1191 pt) is 4.4 Mpx at ANALYZE_RENDER_DPI (150),
+    # both comfortably under the 8 Mpx analyze budget, so ordinary pages must
+    # render at exactly 150 dpi and come back byte-identical to today's output
+    # — not merely "small enough by some other measure".
+    import base64
+
+    import core.pipeline as pipeline
+
+    a4 = (595.0, 841.0)
+    a3 = (842.0, 1191.0)
+    pdf = _make_pdf(tmp_path / "in.pdf", [a4, a3])
+    pipe = _make_pipeline(pdf, tmp_path, {}, 2)
+    pipe.markdown_with_pages_numbers = "text"
+    pipe.product_config = type("C", (), {"analyze_prompt_builder": None})()
+
+    captured = {}
+
+    def _fake_call(call_fn, client, model, blocks):
+        captured["blocks"] = blocks
+        raise RuntimeError("stop after building the blocks")
+
+    monkeypatch.setattr(pipeline, "call_with_vision_fallback", _fake_call)
+    monkeypatch.setattr(pipeline, "AzureOpenAI", lambda **kw: object())
+
+    with pytest.raises(RuntimeError):
+        pipe.analyze_document()
+
+    images = [b for b in captured["blocks"] if b["type"] == "image_url"]
+    assert len(images) == 2
+    with fitz.open(pdf) as doc:
+        for block, page in zip(images, doc):
+            raw = base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
+            width, height = _png_dimensions(raw)
+            expected_pix = page.get_pixmap(dpi=pipeline.ANALYZE_RENDER_DPI)
+            assert (width, height) == (expected_pix.width, expected_pix.height)
+            assert width * height <= ANALYZE_BUDGET_PX
+            # Byte-identical, not just same dimensions.
+            assert raw == expected_pix.tobytes("png")
+
+
+def test_analyze_pathological_page_is_capped_to_the_analyze_budget(tmp_path, monkeypatch):
+    # The pathological geometry from the brief: a 4554 x 6516 pt page (the
+    # real BPS crash page, 1.6 x 2.3 m) is 128.8 Mpx at ANALYZE_RENDER_DPI
+    # (150) — comfortably under CANVAS_BUDGET_PX (200 Mpx) but nearly 16x the
+    # 8 Mpx analyze budget — so this is the case ANALYZE_BUDGET_PX exists to
+    # catch, distinct from the subdocument render's much larger budget.
+    #
+    # Verified finding: this exact page can't be brought under 8 Mpx without
+    # also dropping below MIN_DPI's legibility floor (40) — fitting it into
+    # ANALYZE_BUDGET_PX alone would compute ~37 dpi. render_dpi_for's
+    # documented contract has MIN_DPI win that tie "even where that means
+    # exceeding the budget" (core/rendering.py), the same trade-off
+    # CANVAS_BUDGET_PX already accepts elsewhere. So the real ceiling for
+    # this page is the MIN_DPI-floored render (~9.16 Mpx), not
+    # ANALYZE_BUDGET_PX itself — still a ~14x reduction from the unbounded
+    # ~128.8 Mpx this test would have produced before this change.
+    import base64
+
+    import core.pipeline as pipeline
+
+    page_size = (4554.0, 6516.0)
+    pdf = _make_pdf(tmp_path / "in.pdf", [page_size])
+    pipe = _make_pipeline(pdf, tmp_path, {}, 1)
+    pipe.markdown_with_pages_numbers = "text"
+    pipe.product_config = type("C", (), {"analyze_prompt_builder": None})()
+
+    captured = {}
+
+    def _fake_call(call_fn, client, model, blocks):
+        captured["blocks"] = blocks
+        raise RuntimeError("stop after building the blocks")
+
+    monkeypatch.setattr(pipeline, "call_with_vision_fallback", _fake_call)
+    monkeypatch.setattr(pipeline, "AzureOpenAI", lambda **kw: object())
+
+    with pytest.raises(RuntimeError):
+        pipe.analyze_document()
+
+    images = [b for b in captured["blocks"] if b["type"] == "image_url"]
+    assert len(images) == 1
+    raw = base64.b64decode(images[0]["image_url"]["url"].split(",", 1)[1])
+    width, height = _png_dimensions(raw)
+
+    expected_dpi = render_dpi_for(
+        [page_size], pipeline.ANALYZE_RENDER_DPI, budget_px=ANALYZE_BUDGET_PX
+    )
+    assert expected_dpi == MIN_DPI  # confirms this page does hit the floor
+    with fitz.open(pdf) as doc:
+        expected_pix = doc[0].get_pixmap(dpi=expected_dpi)
+    assert (width, height) == (expected_pix.width, expected_pix.height)
+    # Capped far below the unbounded ~128.8 Mpx render either way.
+    assert width * height <= max(ANALYZE_BUDGET_PX, 10_000_000)

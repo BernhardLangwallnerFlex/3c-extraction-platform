@@ -14,7 +14,12 @@ from dotenv import load_dotenv
 from openai import AzureOpenAI
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 from core.llm_errors import call_with_vision_fallback, is_retryable
-from core.rendering import concat_page_files, render_dpi_for, render_pdf_pages_to_files
+from core.rendering import (
+    ANALYZE_BUDGET_PX,
+    concat_page_files,
+    render_dpi_for,
+    render_pdf_pages_to_files,
+)
 from core.utils import log_retry, sampling_params
 import shutil
 import sentry_sdk
@@ -221,7 +226,9 @@ class Pipeline:
                     # Budget applied per page: these reach the API as separate
                     # images, so each one — not their sum — has to fit.
                     dpi = render_dpi_for(
-                        [(page.rect.width, page.rect.height)], ANALYZE_RENDER_DPI
+                        [(page.rect.width, page.rect.height)],
+                        ANALYZE_RENDER_DPI,
+                        budget_px=ANALYZE_BUDGET_PX,
                     )
                     pix = page.get_pixmap(dpi=dpi)
                     img_bytes = pix.tobytes("png")

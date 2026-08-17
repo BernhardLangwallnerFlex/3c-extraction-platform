@@ -49,14 +49,24 @@ def render_dpi_for(
     from `page.rect`. Returns `base_dpi` unchanged whenever the pages already
     fit — the no-op guarantee that keeps existing documents byte-identical.
 
+    The budget is checked against the canvas these pages are actually
+    rendered onto: as wide as the widest page, as tall as every page stacked
+    (`concat_page_files` pastes each page at its own width, so narrower pages
+    still cost the full canvas width in white space). For same-width pages —
+    the overwhelming majority of real documents — that canvas area equals the
+    sum of each page's own area, so this changes nothing for them. It matters
+    only when one subdocument mixes page widths, where the sum would
+    understate what actually gets allocated.
+
     Rendered area grows with the square of the dpi, so the scale factor is the
     square root of the ratio of budget to actual.
     """
-    total_pt2 = sum(w * h for w, h in page_sizes if w > 0 and h > 0)
-    if total_pt2 <= 0:
+    valid = [(w, h) for w, h in page_sizes if w > 0 and h > 0]
+    if not valid:
         return base_dpi
 
-    total_px_at_base = total_pt2 * (base_dpi / 72.0) ** 2
+    canvas_pt2 = max(w for w, _h in valid) * sum(h for _w, h in valid)
+    total_px_at_base = canvas_pt2 * (base_dpi / 72.0) ** 2
     if total_px_at_base <= budget_px:
         return base_dpi
 

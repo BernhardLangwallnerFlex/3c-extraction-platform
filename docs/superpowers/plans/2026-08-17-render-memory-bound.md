@@ -1,0 +1,939 @@
+# Bounding page-render memory — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Stop the worker being OOM-killed by large-format scans, by choosing render dpi from a pixel budget instead of fixing it, and never holding more than one rendered page in memory at a time.
+
+**Architecture:** A new `core/rendering.py` owns all bounded rasterisation: a pure `render_dpi_for()` that picks a dpi from a pixel budget, plus `render_pdf_pages_to_files()` / `concat_page_files()` which stream pages through disk so peak memory is *canvas + one page* rather than *canvas + every page*. Every `get_pixmap` call site in production code then routes through it. No API contract changes.
+
+**Tech Stack:** Python 3.11, PyMuPDF (`fitz`), Pillow, pytest, structlog.
+
+**Spec:** `docs/superpowers/specs/2026-08-17-render-memory-bound-design.md`
+
+## Global Constraints
+
+- **`CANVAS_BUDGET_PX = 200_000_000`** (200 Mpx). Calibrated, not chosen for roundness: the largest whole file in the three regression corpora renders to **141.8 Mpx** at 200 dpi, and a subdocument is a subset of a file. Do not change this value.
+- **`MIN_DPI = 40`.** The floor below which the result stops being legible to the vision model. A pathological input gets a small image rather than an unreadable one, *even if that means exceeding the budget*.
+- **The no-op guarantee:** a document whose pages already fit the budget must render at exactly the dpi it renders at today, producing byte-identical images. `render_dpi_for` returns `base_dpi` unchanged in that case. This is what makes the regression sweep meaningful, and it is the single most important property in this plan.
+- **No API contract change.** No new field, no change to `returncode`, `returncodeReasons`, `qualityFlags` or `warnings`. Downscaling is explicitly **not** a `qualityFlags` entry — the API downsamples large images anyway, so flagging it would train the consumer to treat a normal result as suspect.
+- Existing render dpi values are preserved as the *base*: 200 for subdocument images and Mistral OCR, 150 for analyze, orientation detection and `convert_file_to_images`.
+- German user-facing strings: none are added or changed by this work.
+- Tests live under `tests/core/`. Run with `.venv/bin/python -m pytest tests/`.
+
+---
+
+### Task 1: `core/rendering.py` — the budget helper
+
+The pure function everything else depends on. No I/O, no product knowledge, no `fitz` needed to test it.
+
+**Files:**
+- Create: `core/rendering.py`
+- Test: `tests/core/test_rendering.py`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `CANVAS_BUDGET_PX: int = 200_000_000`
+  - `MIN_DPI: int = 40`
+  - `render_dpi_for(page_sizes: Sequence[tuple[float, float]], base_dpi: int, budget_px: int = CANVAS_BUDGET_PX) -> int` — `page_sizes` are `(width, height)` pairs in **PDF points** (1/72 inch), as read from `page.rect`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/core/test_rendering.py`:
+
+```python
+"""Bounding rendered pixels.
+
+A page's pixel count grows with the square of the dpi, and every pixel costs
+three bytes as RGB. A fixed dpi therefore means an unbounded memory footprint,
+which is how a five-page BPS document with 1.6 x 2.3 m pages killed a 4 GiB
+worker three times in a row on 2026-08-17.
+"""
+import pytest
+
+from core.rendering import CANVAS_BUDGET_PX, MIN_DPI, render_dpi_for
+
+A4 = (595.0, 841.0)
+# The two page geometries from the document that caused the OOM, in points.
+HUGE_A = (4554.0, 6516.0)
+HUGE_B = (4177.0, 6095.0)
+
+
+def _total_px(page_sizes, dpi):
+    return sum(w * h for w, h in page_sizes) * (dpi / 72.0) ** 2
+
+
+def test_pages_within_budget_return_base_dpi_unchanged():
+    # The no-op guarantee: every document that works today must render at
+    # exactly the dpi it renders at today.
+    assert render_dpi_for([A4] * 5, base_dpi=200) == 200
+
+
+def test_single_oversized_page_scales_down_within_budget():
+    dpi = render_dpi_for([HUGE_A], base_dpi=200)
+    assert dpi < 200
+    assert _total_px([HUGE_A], dpi) <= CANVAS_BUDGET_PX
+
+
+def test_many_normal_pages_that_collectively_exceed_budget_scale_down():
+    pages = [A4] * 500
+    assert _total_px(pages, 200) > CANVAS_BUDGET_PX
+    dpi = render_dpi_for(pages, base_dpi=200)
+    assert dpi < 200
+    assert _total_px(pages, dpi) <= CANVAS_BUDGET_PX
+
+
+def test_result_never_goes_below_min_dpi():
+    absurd = [(100_000.0, 100_000.0)] * 50
+    assert render_dpi_for(absurd, base_dpi=200) == MIN_DPI
+
+
+def test_empty_page_list_returns_base_dpi():
+    assert render_dpi_for([], base_dpi=200) == 200
+
+
+def test_zero_area_pages_return_base_dpi():
+    # Degenerate geometry must not divide by zero.
+    assert render_dpi_for([(0.0, 0.0)], base_dpi=150) == 150
+
+
+def test_real_failing_geometry_fits_the_budget():
+    # The actual document: one A4 cover page plus four large-format scans.
+    pages = [A4, HUGE_A, HUGE_B, HUGE_A, HUGE_B]
+    assert _total_px(pages, 200) > 800_000_000  # ~854.7 Mpx, the crash
+    dpi = render_dpi_for(pages, base_dpi=200)
+    assert MIN_DPI <= dpi < 200
+    assert _total_px(pages, dpi) <= CANVAS_BUDGET_PX
+
+
+@pytest.mark.parametrize("base_dpi", [150, 200])
+def test_budget_is_honoured_for_each_base_dpi(base_dpi):
+    pages = [HUGE_A, HUGE_B]
+    assert _total_px(pages, render_dpi_for(pages, base_dpi)) <= CANVAS_BUDGET_PX
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/core/test_rendering.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'core.rendering'`
+
+- [ ] **Step 3: Write the implementation**
+
+Create `core/rendering.py`:
+
+```python
+"""Bounded page rendering.
+
+Rasterising a PDF page is the one place in this pipeline where a document's
+physical size turns directly into resident memory: a page's pixel count grows
+with the square of the dpi, and every pixel costs three bytes as RGB. A fixed
+dpi therefore means an unbounded memory footprint — which is how a five-page
+BPS document with roughly 1.6 x 2.3 m pages killed a 4 GiB worker three times
+in a row on 2026-08-17.
+
+Two bounds live here: choose the dpi from a pixel budget rather than fixing
+it, and never hold more than one rendered page in memory at a time.
+"""
+from __future__ import annotations
+
+from math import sqrt
+from pathlib import Path
+from typing import Sequence
+
+# Total rendered pixels one concatenated image — or one standalone page image
+# — may occupy. 200 Mpx as RGB is 600 MB, which leaves headroom under the
+# worker's 4 GiB limit even alongside a page pixmap.
+#
+# Calibrated, not chosen for roundness: the largest whole file in the three
+# regression corpora renders to 141.8 Mpx at 200 dpi, and a subdocument is a
+# subset of a file. Every document that works today therefore renders at
+# exactly the dpi it renders at today, byte for byte.
+CANVAS_BUDGET_PX = 200_000_000
+
+# Below roughly this resolution, body text on a scanned page stops being
+# legible to the vision model. A pathological input gets a small image rather
+# than an unreadable one, even where that means exceeding the budget.
+MIN_DPI = 40
+
+
+def render_dpi_for(
+    page_sizes: Sequence[tuple[float, float]],
+    base_dpi: int,
+    budget_px: int = CANVAS_BUDGET_PX,
+) -> int:
+    """Pick the dpi at which `page_sizes` render within `budget_px` pixels.
+
+    `page_sizes` are (width, height) pairs in PDF points (1/72 inch), as read
+    from `page.rect`. Returns `base_dpi` unchanged whenever the pages already
+    fit — the no-op guarantee that keeps existing documents byte-identical.
+
+    Rendered area grows with the square of the dpi, so the scale factor is the
+    square root of the ratio of budget to actual.
+    """
+    total_pt2 = sum(w * h for w, h in page_sizes if w > 0 and h > 0)
+    if total_pt2 <= 0:
+        return base_dpi
+
+    total_px_at_base = total_pt2 * (base_dpi / 72.0) ** 2
+    if total_px_at_base <= budget_px:
+        return base_dpi
+
+    # int() truncates, which keeps the result inside the budget rather than
+    # rounding back over it.
+    return max(MIN_DPI, int(base_dpi * sqrt(budget_px / total_px_at_base)))
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/core/test_rendering.py -v`
+Expected: PASS (9 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add core/rendering.py tests/core/test_rendering.py
+git commit -m "feat: add render_dpi_for — pick render dpi from a pixel budget"
+```
+
+---
+
+### Task 2: Streaming render-and-concatenate
+
+The two functions that make peak memory *canvas + one page*. Still no pipeline changes — this task delivers and tests the mechanism in isolation.
+
+**Files:**
+- Modify: `core/rendering.py`
+- Test: `tests/core/test_rendering.py` (append)
+
+**Interfaces:**
+- Consumes: `render_dpi_for`, `CANVAS_BUDGET_PX` from Task 1.
+- Produces:
+  - `render_pdf_pages_to_files(pdf_path, out_dir, base_dpi, budget_px=CANVAS_BUDGET_PX, prefix="page") -> list[tuple[Path, int, int]]` — one PNG per page under `out_dir`, returning `(path, width_px, height_px)` in page order.
+  - `concat_page_files(page_files, out_path) -> Path` — vertical concatenation of those PNGs onto a white RGB canvas.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `tests/core/test_rendering.py`:
+
+```python
+import fitz
+from PIL import Image
+
+from core.rendering import concat_page_files, render_pdf_pages_to_files
+
+
+def _make_pdf(path, page_sizes):
+    doc = fitz.open()
+    for i, (w, h) in enumerate(page_sizes):
+        page = doc.new_page(width=w, height=h)
+        page.insert_text((72, 72), f"Seite {i + 1}")
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_render_writes_one_file_per_page_with_recorded_sizes(tmp_path):
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4, A4, A4])
+
+    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    assert len(rendered) == 3
+    for page_path, width, height in rendered:
+        assert page_path.exists()
+        with Image.open(page_path) as img:
+            assert (img.width, img.height) == (width, height)
+
+
+def test_render_uses_base_dpi_when_pages_fit(tmp_path):
+    # The no-op guarantee, end to end: a normal page renders at exactly the
+    # size a fixed 200 dpi would have produced.
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4])
+
+    (_path, width, height), = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    with fitz.open(pdf) as doc:
+        expected = doc[0].get_pixmap(dpi=200)
+    assert (width, height) == (expected.width, expected.height)
+
+
+def test_render_downscales_an_oversized_page(tmp_path):
+    pdf = _make_pdf(tmp_path / "in.pdf", [HUGE_A])
+
+    (_path, width, height), = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    assert width * height <= CANVAS_BUDGET_PX
+
+
+def test_concat_produces_expected_canvas_dimensions(tmp_path):
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4, (300.0, 400.0), A4])
+    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    out = concat_page_files(rendered, tmp_path / "out.png")
+
+    with Image.open(out) as img:
+        assert img.width == max(w for _, w, _ in rendered)
+        assert img.height == sum(h for _, _, h in rendered)
+        assert img.mode == "RGB"
+
+
+def test_concat_matches_the_previous_implementation(tmp_path):
+    # The old code rendered every page into a list, then pasted them onto a
+    # canvas sized from that list. Same pixels, different memory profile.
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4, A4])
+
+    with fitz.open(pdf) as doc:
+        old_pages = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=200)
+            mode = "RGB" if pix.alpha == 0 else "RGBA"
+            old_pages.append(Image.frombytes(mode, [pix.width, pix.height], pix.samples))
+    old = Image.new(
+        "RGB",
+        (max(i.width for i in old_pages), sum(i.height for i in old_pages)),
+        color=(255, 255, 255),
+    )
+    y = 0
+    for img in old_pages:
+        old.paste(img, (0, y))
+        y += img.height
+
+    new_path = concat_page_files(
+        render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200), tmp_path / "new.png"
+    )
+    with Image.open(new_path) as new:
+        assert new.convert("RGB").tobytes() == old.tobytes()
+
+
+def test_concat_holds_at_most_one_page_open_at_a_time(tmp_path, monkeypatch):
+    # The whole point of the change: the canvas plus one page, not the canvas
+    # plus every page. Asserted through a counting fake, not by measuring RSS.
+    pdf = _make_pdf(tmp_path / "in.pdf", [A4] * 6)
+    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+
+    import core.rendering as rendering
+
+    real_open = rendering.Image.open
+    live = {"now": 0, "max": 0}
+
+    class _Tracked:
+        def __init__(self, path):
+            self._img = real_open(path)
+
+        def __enter__(self):
+            live["now"] += 1
+            live["max"] = max(live["max"], live["now"])
+            return self._img.__enter__()
+
+        def __exit__(self, *exc):
+            live["now"] -= 1
+            return self._img.__exit__(*exc)
+
+    monkeypatch.setattr(rendering.Image, "open", _Tracked)
+
+    concat_page_files(rendered, tmp_path / "out.png")
+
+    assert live["max"] == 1
+
+
+def test_concat_rejects_an_empty_page_list(tmp_path):
+    with pytest.raises(ValueError):
+        concat_page_files([], tmp_path / "out.png")
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/core/test_rendering.py -v`
+Expected: FAIL — `ImportError: cannot import name 'concat_page_files'`
+
+- [ ] **Step 3: Write the implementation**
+
+Add to `core/rendering.py` — imports first (`fitz`, `Image`, `structlog` alongside the existing ones):
+
+```python
+import fitz
+import structlog
+from PIL import Image
+
+_log = structlog.get_logger()
+```
+
+then:
+
+```python
+def render_pdf_pages_to_files(
+    pdf_path,
+    out_dir,
+    base_dpi: int,
+    budget_px: int = CANVAS_BUDGET_PX,
+    prefix: str = "page",
+) -> list[tuple[Path, int, int]]:
+    """Render every page of `pdf_path` to its own PNG under `out_dir`.
+
+    Returns (path, width_px, height_px) per page, in page order.
+
+    Exactly one page pixmap is alive at any moment: each is written to disk and
+    dropped before the next is rendered. The dpi is chosen once for the whole
+    file so that pages stay visually consistent with one another within the
+    concatenated image.
+    """
+    out_dir = Path(out_dir)
+    rendered: list[tuple[Path, int, int]] = []
+
+    with fitz.open(pdf_path) as doc:
+        dpi = render_dpi_for(
+            [(page.rect.width, page.rect.height) for page in doc], base_dpi, budget_px
+        )
+        if dpi != base_dpi:
+            _log.warning(
+                "render_downscaled",
+                reason="pages exceed the pixel budget at the base dpi",
+                base_dpi=base_dpi,
+                dpi=dpi,
+                pages=len(doc),
+                budget_px=budget_px,
+            )
+        for index, page in enumerate(doc):
+            pix = page.get_pixmap(dpi=dpi)
+            page_path = out_dir / f"{prefix}_{index:04d}.png"
+            pix.save(str(page_path))
+            rendered.append((page_path, pix.width, pix.height))
+            del pix
+
+    return rendered
+
+
+def concat_page_files(page_files: Sequence[tuple[Path, int, int]], out_path) -> Path:
+    """Paste per-page PNGs onto one vertically concatenated canvas.
+
+    Canvas dimensions come from the sizes recorded at render time, so the
+    canvas is allocated once and each page is opened, pasted and closed in
+    turn. Peak memory is the canvas plus a single page — not the canvas plus
+    every page, which is what made a large-format document fatal.
+    """
+    if not page_files:
+        raise ValueError("concat_page_files requires at least one page")
+
+    max_width = max(width for _path, width, _height in page_files)
+    total_height = sum(height for _path, _width, height in page_files)
+
+    canvas = Image.new("RGB", (max_width, total_height), color=(255, 255, 255))
+    y = 0
+    for page_path, _width, height in page_files:
+        with Image.open(page_path) as page_img:
+            # No mask: an RGBA page is converted to RGB by paste, exactly as
+            # the previous implementation did.
+            canvas.paste(page_img, (0, y))
+        y += height
+
+    out_path = Path(out_path)
+    canvas.save(out_path)
+    canvas.close()
+    return out_path
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/core/test_rendering.py -v`
+Expected: PASS (16 tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add core/rendering.py tests/core/test_rendering.py
+git commit -m "feat: stream page renders through disk so peak memory is canvas + one page"
+```
+
+---
+
+### Task 3: Wire the subdocument image render — the crash site
+
+`core/pipeline.py:307-327` is where the OOM happened. It renders every page of a subdocument at a fixed 200 dpi, accumulates all of them in `page_images`, and only then allocates the canvas.
+
+**Files:**
+- Modify: `core/pipeline.py` (imports; the constant; `split_document_into_invoices`, currently lines 307-327)
+- Test: `tests/core/test_pipeline_render.py` (create)
+
+**Interfaces:**
+- Consumes: `render_pdf_pages_to_files`, `concat_page_files` from Task 2.
+- Produces: `SUBDOC_RENDER_DPI = 200` as a module constant in `core/pipeline.py`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/core/test_pipeline_render.py`. The `object.__new__(Pipeline)` construction mirrors `tests/core/test_pipeline_split_fallback.py` — it skips the I/O-heavy `__init__`.
+
+```python
+"""The subdocument image render, bounded.
+
+This is the call site that OOM-killed a BPS worker three times on 2026-08-17.
+"""
+from pathlib import Path
+
+import fitz
+import pytest
+from PIL import Image
+
+from core.pipeline import Pipeline
+from core.rendering import CANVAS_BUDGET_PX
+
+
+class _CapturingStorage:
+    def __init__(self):
+        self.blobs = {}
+
+    def write_text(self, key, text):
+        self.blobs[key] = text.encode()
+
+    def write_bytes(self, key, data, content_type=None):
+        self.blobs[key] = data
+
+
+def _make_pipeline(pdf_path, work_dir, invoice_pages, page_count):
+    pipe = object.__new__(Pipeline)
+    pipe.storage = _CapturingStorage()
+    pipe.analysis_dict = {"invoice_pages": invoice_pages}
+    pipe.file_type = "pdf"
+    pipe.local_input_path = str(pdf_path)
+    pipe.work_dir = Path(work_dir)
+    pipe.output_prefix = "az://invoices/processed-bps"
+    pipe.stem = "abc"
+    pipe.subdocuments = []
+    pipe.markdown_by_page = {n: f"seite {n}" for n in range(1, page_count + 1)}
+    return pipe
+
+
+def _make_pdf(path, page_sizes):
+    doc = fitz.open()
+    for i, (w, h) in enumerate(page_sizes):
+        doc.new_page(width=w, height=h).insert_text((72, 72), f"Seite {i + 1}")
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_normal_document_image_is_unchanged(tmp_path):
+    # The no-op guarantee at pipeline level: an A4 document still renders at
+    # 200 dpi, so the regression corpora produce the images they always have.
+    pdf = _make_pdf(tmp_path / "in.pdf", [(595.0, 841.0)] * 2)
+    pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1, 2]}, 2)
+
+    pipe.split_document_into_invoices()
+
+    with fitz.open(pdf) as doc:
+        expected_w = doc[0].get_pixmap(dpi=200).width
+        expected_h = sum(p.get_pixmap(dpi=200).height for p in doc)
+
+    img_key = pipe.subdocuments[0].image_key
+    out = tmp_path / "written.png"
+    out.write_bytes(pipe.storage.blobs[img_key])
+    with Image.open(out) as img:
+        assert (img.width, img.height) == (expected_w, expected_h)
+
+
+def test_oversized_document_renders_within_the_budget(tmp_path):
+    # The failing geometry: one A4 cover page plus four large-format scans.
+    pdf = _make_pdf(
+        tmp_path / "in.pdf",
+        [(595.0, 841.0), (4554.0, 6516.0), (4177.0, 6095.0), (4554.0, 6516.0), (4177.0, 6095.0)],
+    )
+    pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1, 2, 3, 4, 5]}, 5)
+
+    pipe.split_document_into_invoices()
+
+    img_key = pipe.subdocuments[0].image_key
+    out = tmp_path / "written.png"
+    out.write_bytes(pipe.storage.blobs[img_key])
+    with Image.open(out) as img:
+        assert img.width * img.height <= CANVAS_BUDGET_PX
+
+
+def test_per_page_temp_files_do_not_survive(tmp_path):
+    # They are scratch, and on the failing document they are large scratch.
+    pdf = _make_pdf(tmp_path / "in.pdf", [(595.0, 841.0)] * 3)
+    pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1, 2], "R-2": [3]}, 3)
+
+    pipe.split_document_into_invoices()
+
+    assert list(tmp_path.glob("subdoc*_page_*.png")) == []
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py -v`
+Expected: `test_oversized_document_renders_within_the_budget` FAILS on the budget assertion. The other two pass against the current code.
+
+**Caution:** against the *unfixed* code this test reproduces the production OOM — it tries to allocate roughly 5 GB. On a developer machine that means heavy swapping for a minute or two, not a crash, but do not run it on a memory-constrained box. If the process is killed rather than failing the assertion, that is itself the red-fail this step is looking for: record it and move to Step 3.
+
+- [ ] **Step 3: Write the implementation**
+
+In `core/pipeline.py`, add to the imports near `from core.utils import log_retry, sampling_params`:
+
+```python
+from core.rendering import concat_page_files, render_dpi_for, render_pdf_pages_to_files
+```
+
+Add a module constant beside the existing German warning constants:
+
+```python
+# Base render resolutions. These are what the pipeline asks for; the actual dpi
+# is whatever core.rendering can deliver inside the pixel budget.
+SUBDOC_RENDER_DPI = 200
+ANALYZE_RENDER_DPI = 150
+```
+
+Replace the body of step 3 in `split_document_into_invoices` — currently lines 307-327, from the `# 3) render pages...` comment through the `self.storage.write_bytes(img_key, ...)` call:
+
+```python
+                # 3) render pages into one concatenated image locally, then upload/store
+                #
+                # Rendered page by page through disk rather than accumulated in
+                # a list: a large-format scan makes "every page pixmap plus the
+                # canvas" several gigabytes, and the worker has four.
+                page_files = render_pdf_pages_to_files(
+                    subdoc_pdf_local,
+                    self.work_dir,
+                    base_dpi=SUBDOC_RENDER_DPI,
+                    prefix=f"subdoc{document_number}_page",
+                )
+                subdoc_img_local = self.work_dir / Path(img_key).name
+                concat_page_files(page_files, subdoc_img_local)
+                for page_path, _width, _height in page_files:
+                    page_path.unlink(missing_ok=True)
+
+                self.storage.write_bytes(img_key, subdoc_img_local.read_bytes(), content_type="image/png")
+```
+
+Delete the now-unused `page_images` list, the `total_height`/`max_width` computation and the old paste loop. If `from PIL import Image` becomes unused in `core/pipeline.py`, leave it — `_fix_image_orientation` and `_fix_pdf_orientation` still use it.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py tests/core/test_pipeline_split_fallback.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Run the full suite for regressions**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: PASS, no fewer tests than before this task.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add core/pipeline.py tests/core/test_pipeline_render.py
+git commit -m "fix: bound subdocument image render — the OOM site"
+```
+
+---
+
+### Task 4: Wire the analyze-document render
+
+`core/pipeline.py:208-220` renders one image per page for `analyze_document`. It rendered the failing document's five pages at 150 dpi — about 480 Mpx across five separate PNGs — and survived only because each is encoded and released before the next. The flaw is the same; the budget applies **per image** here, because these go to the API as separate images and each one, not their sum, is what has to fit.
+
+**Files:**
+- Modify: `core/pipeline.py` (`analyze_document`, currently lines 208-220)
+- Test: `tests/core/test_pipeline_render.py` (append)
+
+**Interfaces:**
+- Consumes: `render_dpi_for`, `ANALYZE_RENDER_DPI` from Task 3.
+- Produces: nothing new.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/core/test_pipeline_render.py`:
+
+```python
+def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
+    # Per-image budget: analyze sends pages as separate images, so each one is
+    # what has to fit, not their sum.
+    import core.pipeline as pipeline
+
+    pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0), (595.0, 841.0)])
+    pipe = _make_pipeline(pdf, tmp_path, {}, 2)
+    pipe.markdown_with_pages_numbers = "text"
+    pipe.product_config = type("C", (), {"analyze_prompt_builder": None})()
+
+    captured = {}
+
+    def _fake_call(call_fn, client, model, blocks):
+        captured["blocks"] = blocks
+        raise RuntimeError("stop after building the blocks")
+
+    monkeypatch.setattr(pipeline, "call_with_vision_fallback", _fake_call)
+    monkeypatch.setattr(pipeline, "AzureOpenAI", lambda **kw: object())
+
+    with pytest.raises(RuntimeError):
+        pipe.analyze_document()
+
+    import base64
+    import io
+
+    images = [b for b in captured["blocks"] if b["type"] == "image_url"]
+    assert len(images) == 2
+    for block in images:
+        raw = base64.b64decode(block["image_url"]["url"].split(",", 1)[1])
+        with Image.open(io.BytesIO(raw)) as img:
+            assert img.width * img.height <= CANVAS_BUDGET_PX
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py::test_analyze_renders_each_page_within_the_budget -v`
+Expected: FAIL on the budget assertion for the first (large) page.
+
+- [ ] **Step 3: Write the implementation**
+
+Replace the render loop inside `analyze_document`:
+
+```python
+        if self.file_type == "pdf":
+            with fitz.open(self.local_input_path) as doc:
+                for page in doc:
+                    # Budget applied per page: these reach the API as separate
+                    # images, so each one — not their sum — has to fit.
+                    dpi = render_dpi_for(
+                        [(page.rect.width, page.rect.height)], ANALYZE_RENDER_DPI
+                    )
+                    pix = page.get_pixmap(dpi=dpi)
+                    img_bytes = pix.tobytes("png")
+                    del pix
+                    b64 = base64.b64encode(img_bytes).decode("utf-8")
+                    content_blocks.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{b64}",
+                            "detail": "low",
+                        },
+                    })
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add core/pipeline.py tests/core/test_pipeline_render.py
+git commit -m "fix: bound the per-page render in analyze_document"
+```
+
+---
+
+### Task 5: The remaining render sites
+
+The spec requires that no unbounded `get_pixmap` be left behind — otherwise the next large document simply finds a different way to kill the worker. There are three more in production code. Two are named in the spec; the third (`ocr_mistral_v2.py:53`) was found while reading the code and renders at **200 dpi**, the highest of any per-page site.
+
+| Site | Base dpi | Purpose |
+|---|---|---|
+| `core/pipeline.py:140` (`_fix_pdf_orientation`) | 150 | Tesseract OSD rotation detection |
+| `core/utils.py:190` (`convert_file_to_images`) | 150 | direct-PDF vision input |
+| `core/ocr/ocr_mistral_v2.py:53` (`_process_pdf`) | 200 | production Mistral OCR |
+
+All three already render one page at a time, so the fix is the dpi bound alone. `core/ocr/ocr_mistral.py` and `core/ocr/ocr_tesseract.py` also call `get_pixmap`, but neither is wired into production — `DualOCRProcessor` imports only `ocr_mistral_v2` and `ocr_azure_docintel`. Leave them alone.
+
+**Scope note:** bounding `ocr_mistral_v2` is a **memory** fix, in scope under "no unbounded `get_pixmap`". It does **not** claim to fix Mistral's `"Image pixels are above the allowed limits"` rejection — Mistral's own limit is far below 200 Mpx, and the spec puts that rejection out of scope. Do not widen this task to chase it.
+
+**Files:**
+- Modify: `core/pipeline.py` (`_fix_pdf_orientation`, line 140)
+- Modify: `core/utils.py` (`convert_file_to_images`, line 190)
+- Modify: `core/ocr/ocr_mistral_v2.py` (`_process_pdf`, line 53)
+- Test: `tests/core/test_rendering_call_sites.py` (create)
+
+**Interfaces:**
+- Consumes: `render_dpi_for`, `CANVAS_BUDGET_PX` from Task 1.
+- Produces: nothing new.
+
+- [ ] **Step 1: Write the failing tests**
+
+Create `tests/core/test_rendering_call_sites.py`:
+
+```python
+"""No unbounded get_pixmap left in production code.
+
+Each of these sites renders one page at a time, so memory never reached the
+subdocument site's several gigabytes — but a single large-format page at a
+fixed dpi is still hundreds of megabytes against a 4 GiB limit.
+"""
+import fitz
+import pytest
+from PIL import Image
+
+from core.rendering import CANVAS_BUDGET_PX
+
+HUGE = (4554.0, 6516.0)
+
+
+def _make_pdf(path, page_sizes):
+    doc = fitz.open()
+    for i, (w, h) in enumerate(page_sizes):
+        doc.new_page(width=w, height=h).insert_text((72, 72), f"Seite {i + 1}")
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def test_convert_file_to_images_bounds_each_page(tmp_path):
+    from core.utils import convert_file_to_images
+
+    pdf = _make_pdf(tmp_path / "in.pdf", [HUGE, (595.0, 841.0)])
+
+    paths = convert_file_to_images(str(pdf))
+
+    assert len(paths) == 2
+    for path in paths:
+        with Image.open(path) as img:
+            assert img.width * img.height <= CANVAS_BUDGET_PX
+
+
+def test_mistral_ocr_bounds_each_rendered_page(tmp_path, monkeypatch):
+    from core.ocr.ocr_mistral_v2 import MistralOCRProcessor
+
+    pdf = _make_pdf(tmp_path / "in.pdf", [HUGE])
+
+    engine = object.__new__(MistralOCRProcessor)
+    sizes = []
+
+    def _fake_process_image(image_path):
+        with Image.open(image_path) as img:
+            sizes.append(img.width * img.height)
+        return "markdown"
+
+    monkeypatch.setattr(engine, "_process_image", _fake_process_image)
+
+    result = engine._process_pdf(str(pdf))
+
+    assert result == {1: "markdown"}
+    assert sizes and all(px <= CANVAS_BUDGET_PX for px in sizes)
+
+
+def test_orientation_detection_bounds_each_page(tmp_path, monkeypatch):
+    import core.pipeline as pipeline
+    from core.pipeline import Pipeline
+
+    pdf = _make_pdf(tmp_path / "in.pdf", [HUGE])
+
+    pipe = object.__new__(Pipeline)
+    pipe.local_input_path = str(pdf)
+    pipe.work_dir = tmp_path
+
+    seen = []
+
+    def _fake_detect(img):
+        seen.append(img.width * img.height)
+        return 0
+
+    monkeypatch.setattr(Pipeline, "_detect_rotation", staticmethod(_fake_detect))
+
+    pipe._fix_pdf_orientation()
+
+    assert seen and all(px <= CANVAS_BUDGET_PX for px in seen)
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/core/test_rendering_call_sites.py -v`
+Expected: all three FAIL on the budget assertion.
+
+- [ ] **Step 3: Write the implementation**
+
+In `core/pipeline.py`, `_fix_pdf_orientation` — replace `pix = page.get_pixmap(dpi=150)`:
+
+```python
+                dpi = render_dpi_for(
+                    [(page.rect.width, page.rect.height)], ORIENTATION_RENDER_DPI
+                )
+                pix = page.get_pixmap(dpi=dpi)
+```
+
+and add `ORIENTATION_RENDER_DPI = 150` to the render-dpi constants added in Task 3.
+
+In `core/utils.py` — add `from core.rendering import render_dpi_for` to the imports, then in `convert_file_to_images` replace `pix = page.get_pixmap(dpi=150)`:
+
+```python
+                dpi = render_dpi_for([(page.rect.width, page.rect.height)], 150)
+                pix = page.get_pixmap(dpi=dpi)
+```
+
+In `core/ocr/ocr_mistral_v2.py` — add `from core.rendering import render_dpi_for` to the imports, then in `_process_pdf` replace `pix = page.get_pixmap(dpi=200)`:
+
+```python
+                # One page at a time, but a large-format page at a fixed 200 dpi
+                # is still hundreds of megabytes.
+                dpi = render_dpi_for([(page.rect.width, page.rect.height)], 200)
+                pix = page.get_pixmap(dpi=dpi)
+```
+
+**Check for an import cycle** before committing: `core/rendering.py` imports only `fitz`, `PIL`, `structlog` and stdlib, so importing it from `core/utils.py` is safe. If a cycle appears anyway, fix it by keeping `core/rendering.py` free of project imports — never by duplicating the helper.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/core/test_rendering_call_sites.py -v`
+Expected: PASS
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add core/pipeline.py core/utils.py core/ocr/ocr_mistral_v2.py tests/core/test_rendering_call_sites.py
+git commit -m "fix: bound the remaining production render sites"
+```
+
+---
+
+### Task 6: Verification against the real corpora
+
+Unit tests prove the mechanism. Only the corpora prove the no-op guarantee held, and only the failing document proves the crash is gone. **This task is run by the controller, not delegated** — it needs live API keys and costs roughly $1 in LLM calls per sweep.
+
+**Files:** none modified. This task produces evidence, not code.
+
+**Interfaces:**
+- Consumes: everything from Tasks 1-5.
+- Produces: a go/no-go on merging.
+
+- [ ] **Step 1: Full unit suite**
+
+Run: `.venv/bin/python -m pytest tests/ -q`
+Expected: PASS, with a test count at least 219 + the new tests.
+
+- [ ] **Step 2: Acceptance — the document that caused the OOM**
+
+The five-page BPS document with 1.6 × 2.3 m pages, 854.7 Mpx at a fixed 200 dpi:
+
+```bash
+PRODUCT_NAME=bps STORAGE_BACKEND=local CLEANUP_ARTIFACTS=false \
+  .venv/bin/python scripts/extract_local.py ~/Downloads/bps-oom-20260817-c16e5672.pdf
+```
+
+Expected: completes without being killed, and returns **at least one subdocument**. Confirm in the logs that a `render_downscaled` event fired — if it did not, the budget was never exercised and the run proves nothing about this fix. Note the resulting dpi.
+
+It is customer data and must not be committed.
+
+- [ ] **Step 3: Regression sweep — the no-op guarantee**
+
+This is the gate that matters. Every document in the corpora should render at exactly the dpi it rendered at before, so results should be unchanged:
+
+```bash
+.venv/bin/python scripts/returncode_sweep.py <corpus-dir> --expect 100
+```
+
+Run for all three corpora. Expected: green, matching the 29 PDFs / 37 subdocuments baseline. A `render_downscaled` event anywhere in the sweep means a corpus document exceeded the budget — investigate before merging, because the calibration said none should.
+
+- [ ] **Step 4: Regression check, if its references are still valid**
+
+Run: `.venv/bin/python scripts/regression_check.py`
+If its stored references predate the returncode work they may be stale — if so, say so rather than treating a mismatch as a failure of this change.
+
+- [ ] **Step 5: Commit any evidence worth keeping**
+
+No code commit is expected here. Report the acceptance dpi, the sweep result, and the unit test count.
+
+---
+
+## Release
+
+Ships in the same release as the returncode and content-policy work, currently on the test tier as `v20260817a` and awaiting 3C sign-off. This adds no contract change, so it does not complicate 3C's integration, and it fixes a live production crash.
+
+After merge: `./deploy.sh bps <new-tag> test` first, since BPS is where the crash occurred and where large-format scans are most likely.

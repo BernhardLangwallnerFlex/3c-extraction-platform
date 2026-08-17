@@ -12,7 +12,8 @@ from PIL import Image
 import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from core.llm_errors import call_with_vision_fallback, is_retryable
 from core.utils import log_retry, sampling_params
 import shutil
 import sentry_sdk
@@ -25,6 +26,17 @@ import structlog
 # events emitted by processors.azure_processor so cost/observability tooling sees
 # the analyze step too.
 _telemetry = structlog.get_logger()
+
+# Reported to the consumer verbatim; the wording is reviewed German.
+_ANALYZE_VISION_WARNING = (
+    "Die Aufteilung des Dokuments erfolgte ohne Bildanalyse, da der Inhaltsfilter des "
+    "KI-Dienstes mindestens eine Seite abgelehnt hat. Die Zuordnung von Seiten zu Belegen "
+    "kann ungenauer sein."
+)
+_EXTRACT_VISION_WARNING = (
+    "Die Extraktion dieses Belegs erfolgte nur anhand des OCR-Textes, da der Inhaltsfilter "
+    "des KI-Dienstes das Seitenbild abgelehnt hat. Einzelne Werte können ungenauer sein."
+)
 from core.prompt_building.prompt_building import build_prompt_for_analyze_document
 from core.product import ProductConfig
 from core.returncode import apply_returncode_floor
@@ -34,8 +46,11 @@ from core.storage.storage import StorageBackend, LocalStorage, StorageKey
 load_dotenv()
 
 
+# A 4xx other than 408/429 describes the request, so re-sending it unchanged
+# can only fail the same way. Retrying one cost ~5 minutes and three OCR
+# passes in production on 2026-08-14.
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30),
-       before_sleep=log_retry, reraise=True)
+       retry=retry_if_exception(is_retryable), before_sleep=log_retry, reraise=True)
 def _call_analyze_llm(client, model, content_blocks):
     """Call Azure OpenAI for document analysis with retry on transient failures."""
     return client.chat.completions.create(
@@ -58,6 +73,10 @@ class SubdocumentArtifact:
 
 
 class Pipeline:
+    # Set per instance by analyze_document(). Class-level default because
+    # several tests build Pipeline via object.__new__ and never analyze.
+    analyze_vision_dropped: bool = False
+
     def __init__(
         self,
         file_key: StorageKey,
@@ -206,7 +225,15 @@ class Pipeline:
             api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         )
         analyze_model = os.getenv("OPENAI_VISION_MODEL", "gpt-5.4")
-        response = _call_analyze_llm(client, analyze_model, content_blocks)
+        response, self.analyze_vision_dropped = call_with_vision_fallback(
+            _call_analyze_llm, client, analyze_model, content_blocks,
+        )
+        if self.analyze_vision_dropped:
+            _telemetry.warning(
+                "analyze_vision_dropped",
+                reason="content filter rejected the page images — splitting from OCR text only",
+                pages=len(self.markdown_by_page),
+            )
         _usage = getattr(response, "usage", None)
         if _usage is not None:
             _telemetry.info(
@@ -393,7 +420,52 @@ class Pipeline:
         # guarantee, and VCC already occupies the postprocess hook. Running
         # after the hook means the floor judges the values the consumer will
         # actually receive.
-        return apply_returncode_floor(result)
+        result = apply_returncode_floor(result)
+        return self._report_quality(result)
+
+    def _report_quality(self, result: dict) -> dict:
+        """Attach qualityFlags and the German warnings for any degradation.
+
+        `qualityFlags` answers "how well did we read it?" and is deliberately
+        separate from `returncode`, which answers "is this a Beleg?". Folding
+        them together would let a badly-read invoice look like a non-invoice,
+        which auto-cancels a legitimate claim.
+        """
+        # The processor marks its own per-subdocument degradation on the result
+        # rather than on itself, because subdocuments are extracted in parallel
+        # threads sharing one processor. Pop it: it is internal.
+        extraction_dropped = bool(result.pop("_vision_dropped", False))
+        analyze_dropped = bool(getattr(self, "analyze_vision_dropped", False))
+        ocr_degraded = bool(getattr(getattr(self, "ocr_engine", None),
+                                    "single_engine_fallback", False))
+
+        flags = []
+        if analyze_dropped or extraction_dropped:
+            flags.append("VISION_DROPPED")
+        if ocr_degraded:
+            flags.append("SINGLE_ENGINE_OCR")
+
+        warnings = result.get("warnings")
+        if not isinstance(warnings, list):
+            warnings = []
+        if analyze_dropped:
+            warnings.append(_ANALYZE_VISION_WARNING)
+        if extraction_dropped:
+            warnings.append(_EXTRACT_VISION_WARNING)
+        result["warnings"] = warnings
+
+        # Rebuild so the three metadata fields lead, in the documented order.
+        # qualityFlags must be popped from result too, alongside the other two:
+        # otherwise a stray qualityFlags key in result would win the
+        # ordered.update(result) below and silently overwrite the computed flags.
+        result.pop("qualityFlags", None)
+        ordered = {
+            "returncode": result.pop("returncode"),
+            "returncodeReasons": result.pop("returncodeReasons"),
+            "qualityFlags": flags,
+        }
+        ordered.update(result)
+        return ordered
 
     def extract_data_from_subdocuments(self, processor):
         from concurrent.futures import ThreadPoolExecutor

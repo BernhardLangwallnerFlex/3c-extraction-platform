@@ -6,13 +6,15 @@ from core.prompt_building.prompt_building import build_prompt_from_config
 import json
 import re
 import structlog
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from core.llm_errors import call_with_vision_fallback, is_retryable
 
 log = structlog.get_logger()
 
 
+# See core/llm_errors.is_retryable — permanent client errors must not be retried.
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=30),
-       before_sleep=log_retry, reraise=True)
+       retry=retry_if_exception(is_retryable), before_sleep=log_retry, reraise=True)
 def _call_openai(client, model, content_blocks):
     """Call Azure OpenAI with retry on transient failures."""
     return client.chat.completions.create(
@@ -106,7 +108,12 @@ class AzureInvoiceProcessor:
                     }
                 )
         model = self.vision_model if use_vision else self.model
-        response = _call_openai(self.client, model, content_blocks)
+        # The model is deliberately NOT switched on fallback: dropping to
+        # self.model would change extraction behaviour on top of the
+        # degradation, and the vision model handles a text-only request fine.
+        response, vision_dropped = call_with_vision_fallback(
+            _call_openai, self.client, model, content_blocks,
+        )
 
         usage = response.usage
         prompt_tokens = usage.prompt_tokens
@@ -133,7 +140,7 @@ class AzureInvoiceProcessor:
             log.info(
                 "debug_extract",
                 use_vision=use_vision,
-                num_images=(len(content_blocks) - 1),
+                num_images=(0 if vision_dropped else len(content_blocks) - 1),
                 raw_len=len(_raw),
                 has_position=('"position"' in _raw),
                 has_lvposition=('"lvPosition"' in _raw),
@@ -141,4 +148,9 @@ class AzureInvoiceProcessor:
             )
 
         json_result = extract_json_from_response(response.choices[0].message.content)
+        if vision_dropped and isinstance(json_result, dict):
+            # Rides on the result, not on self: subdocuments are extracted in
+            # parallel threads sharing one processor instance. The pipeline
+            # pops this key, so it never reaches the consumer.
+            json_result["_vision_dropped"] = True
         return json_result

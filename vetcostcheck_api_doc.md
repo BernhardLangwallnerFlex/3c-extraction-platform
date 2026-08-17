@@ -120,6 +120,7 @@ curl https://3cvetcostcheck.flex-capital-scale.com/job/fe9c2001-44dc-4254-a0f7-1
       {
         "returncode": 100,
         "returncodeReasons": [],
+        "qualityFlags": [],
         "type": "invoice",
         "number": "28679/23-002307RP",
         "date": "2023-10-15",
@@ -190,6 +191,29 @@ Two things worth knowing:
   a blank or unreadable page, which comes back as `returncode: 300`, and a
   PDF that contains no invoice at all, which comes back as one subdocument
   with `returncode: 200` — rather than an empty array.
+
+---
+
+## Quality Flags
+
+Every subdocument carries `qualityFlags`, an array that is **always present** and
+empty when extraction ran normally. It tells you how well the document could be
+read — which is a separate question from whether it is an invoice, so it is kept
+separate from `returncode`.
+
+| Flag | Meaning |
+|------|---------|
+| `VISION_DROPPED` | The AI service's content filter rejected the page images, so this subdocument was read from OCR text alone. Individual values may be less accurate. |
+| `SINGLE_ENGINE_OCR` | One of the two OCR engines was unavailable, so the text comes from one source instead of two. |
+
+A flagged subdocument is still a normal result: `returncode` means exactly what
+it always means, and the extracted fields are populated as usual. Treat the flags
+as a signal that the result is worth a closer human look, not as an error.
+
+`warnings` carries the same information as a German sentence for a human reader.
+
+**Ignore flag values you do not recognise.** The list may grow, and new values
+will always be additive.
 
 ---
 

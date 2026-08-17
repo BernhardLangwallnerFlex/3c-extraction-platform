@@ -6,6 +6,7 @@
   "properties": {
     "returncode": {"type": "integer", "enum": [100, 200, 300], "description": "Klassifizierung des Subdokuments: 100=Beleg (Rechnung/Angebot), 200=kein Beleg, 300=nicht lesbar. Always present."},
     "returncodeReasons": {"type": "array", "items": {"type": "string"}, "description": "German reasons for a 200 or 300. Empty for 100."},
+    "qualityFlags": {"type": "array", "items": {"type": "string", "enum": ["VISION_DROPPED", "SINGLE_ENGINE_OCR"]}, "description": "Quality caveats for this subdocument. Always present, empty when nothing degraded. VISION_DROPPED = extracted from OCR text only because the content filter rejected the page images; SINGLE_ENGINE_OCR = one OCR engine failed. Separate from returncode by design."},
     "type": {"type": ["string", "null"], "enum": ["invoice", "quote", null], "description": "Belegart: invoice=Rechnung, quote=Angebot"},
     "currency": {"type": ["string", "null"], "description": "ISO 4217 code, e.g. EUR"},
     "number": {"type": ["string", "null"], "description": "Belegnummer (Angebots-/Rechnungsnummer)"},

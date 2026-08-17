@@ -68,6 +68,14 @@ The full pipeline at 400 Mpx peaked at **3.69 GB** — 86% of the worker's limit
 
 **`CANVAS_BUDGET_PX = 200_000_000`**, which happens to restore the original constant — but for a reason the original never had. Streaming concatenation (Task 2) is what makes this safe at a lower budget: peak is canvas plus one page, not canvas plus every page.
 
+### Amendment 4 — analyze needs its own, much smaller budget (adds Task 7)
+
+Found by sampling RSS across a full acceptance run. With the split site bounded, **the pipeline's memory peak moved to `analyze_document`** — 4.62 GB high-water across the run, and 2.41 GB for its render loop measured on its own. The shared 200 Mpx per-image budget never binds there, because the pathological pages are 128.8 Mpx at 150 dpi.
+
+The waste is plain once measured: a single page produced a **67 MB PNG**, and all five were held as base64 at once (318 MB accumulated). These blocks are sent with **`"detail": "low"`**, so the API downsamples them to roughly 512px tiles regardless — every one of those megabytes is bought and thrown away.
+
+**`ANALYZE_BUDGET_PX = 8_000_000`.** At 150 dpi an A4 page is 2.2 Mpx and an A3 page 4.4 Mpx, so **every ordinary page stays byte-identical** while the pathological pages drop from 128.8 Mpx to 8. This is Task 7.
+
 ### Amendment 2 — PIL's decompression-bomb guard fires in production
 
 `Image.MAX_IMAGE_PIXELS` defaults to 89,478,485 and `Image.open` raises `DecompressionBombError` above twice that (178,956,970) — **below the budget**. `concat_page_files` reopens the per-page PNGs it just wrote, so a single large-format page inside the budget raises. Verified empirically: a 4554 × 6516 pt page renders to 198.0 Mpx and `concat_page_files` raises. Left unfixed this trades an OOM crash for an exception crash.
@@ -1009,6 +1017,74 @@ If its stored references predate the returncode work they may be stale — if so
 - [ ] **Step 6: Commit any evidence worth keeping**
 
 No code commit is expected here. Report the acceptance dpi, the sweep result, and the unit test count.
+
+---
+
+### Task 7: A separate, much smaller budget for analyze
+
+Added by **Amendment 4**. `analyze_document` is the pipeline's memory ceiling now that the split site is bounded, and the memory it spends is spent on nothing: its images go to the API with `"detail": "low"`.
+
+**Files:**
+- Modify: `core/rendering.py` (add the constant)
+- Modify: `core/pipeline.py` (`analyze_document` — pass the new budget)
+- Test: `tests/core/test_pipeline_render.py` (append)
+
+**Interfaces:**
+- Consumes: `render_dpi_for` from Task 1.
+- Produces: `ANALYZE_BUDGET_PX = 8_000_000` in `core/rendering.py`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Two properties matter, and the first is the one that keeps this safe:
+
+1. **No-op for ordinary pages.** An A4 page (595 × 841 pt) and an A3 page (842 × 1191 pt) at 150 dpi are 2.2 and 4.4 Mpx, both under 8 Mpx, so both must render at exactly 150 dpi and produce byte-identical images to today.
+2. **The pathological page is capped.** A 4554 × 6516 pt page is 128.8 Mpx at 150 dpi and must come back at or under 8 Mpx.
+
+Measure the resulting images with the existing `_png_dimensions` helper, which reads the PNG header via `struct` — do not use `Image.open`. Follow the pattern of the spy test already in this file for reaching into `analyze_document`'s content blocks.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py -v`
+Expected: the cap test FAILS (the page renders at 128.8 Mpx); the no-op tests already pass and must keep passing.
+
+- [ ] **Step 3: Write the implementation**
+
+In `core/rendering.py`, beside `CANVAS_BUDGET_PX`:
+
+```python
+# The analyze step sends one image per page with "detail": "low", which the API
+# downsamples to roughly 512px tiles — so resolution beyond a legible page scan
+# is bought and thrown away. Measured: a single large-format page produced a
+# 67 MB PNG, and holding five of them as base64 put the analyze loop at 2.41 GB,
+# the pipeline's ceiling once the split site was bounded.
+#
+# 8 Mpx leaves every ordinary page untouched — A4 at 150 dpi is 2.2 Mpx and A3
+# is 4.4 Mpx — while capping the pathological ones.
+ANALYZE_BUDGET_PX = 8_000_000
+```
+
+In `core/pipeline.py`, `analyze_document`, pass it explicitly:
+
+```python
+                    dpi = render_dpi_for(
+                        [(page.rect.width, page.rect.height)],
+                        ANALYZE_RENDER_DPI,
+                        budget_px=ANALYZE_BUDGET_PX,
+                    )
+```
+
+and add `ANALYZE_BUDGET_PX` to the `core.rendering` import.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py -v`, then the full suite.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add core/rendering.py core/pipeline.py tests/core/test_pipeline_render.py
+git commit -m "fix: give analyze its own budget — detail:low does not need 67 MB pages"
+```
 
 ---
 

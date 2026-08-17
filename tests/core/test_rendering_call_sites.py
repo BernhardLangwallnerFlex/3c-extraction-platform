@@ -4,12 +4,12 @@ Each of these sites renders one page at a time, so memory never reached the
 subdocument site's several gigabytes — but a single large-format page at a
 fixed dpi is still hundreds of megabytes against a 4 GiB limit.
 
-CANVAS_BUDGET_PX is generous enough (400 Mpx) that a single HUGE page at any
-of these sites' base dpis already fits inside it unscaled — asserting "the
-output stays under budget" would pass identically before and after the fix
-and prove nothing. So these tests assert the call contract instead: each
-site must consult render_dpi_for per page with the right base dpi, and must
-render at the dpi it returns rather than the hardcoded base dpi.
+These tests monkeypatch render_dpi_for entirely, so they are independent of
+the CANVAS_BUDGET_PX constant — asserting "the output stays under budget"
+would pass identically before and after the fix and prove nothing. So these
+tests assert the call contract instead: each site must consult render_dpi_for
+per page with the right base dpi, and must render at the dpi it returns
+rather than the hardcoded base dpi.
 """
 import struct
 from pathlib import Path
@@ -37,9 +37,8 @@ def _png_dimensions(data):
     # Production never reopens its own rendered output through PIL after
     # writing it — only a test's verification step would — so read the PNG
     # header directly instead of via Image.open. That keeps this assertion
-    # from depending on PIL's own decompression-bomb guard (which fires well
-    # below the 400 Mpx budget), a property of PIL, not of what these call
-    # sites are supposed to guarantee.
+    # from depending on PIL's own decompression-bomb guard, a property of PIL,
+    # not of what these call sites are supposed to guarantee.
     if isinstance(data, (str, Path)):
         with open(data, "rb") as f:
             data = f.read(24)

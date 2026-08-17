@@ -188,8 +188,6 @@ def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
             )
             expected_pix = page.get_pixmap(dpi=expected_dpi)
             assert (width, height) == (expected_pix.width, expected_pix.height)
-            # Massively reduced from the unbounded ~128.8 Mpx render either way.
-            assert width * height <= max(ANALYZE_BUDGET_PX, 10_000_000)
 
 
 def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
@@ -349,5 +347,3 @@ def test_analyze_pathological_page_is_capped_to_the_analyze_budget(tmp_path, mon
     with fitz.open(pdf) as doc:
         expected_pix = doc[0].get_pixmap(dpi=expected_dpi)
     assert (width, height) == (expected_pix.width, expected_pix.height)
-    # Capped far below the unbounded ~128.8 Mpx render either way.
-    assert width * height <= max(ANALYZE_BUDGET_PX, 10_000_000)

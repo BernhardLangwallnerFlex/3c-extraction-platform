@@ -208,12 +208,12 @@ def test_concat_rejects_an_empty_page_list(tmp_path):
 
 def test_concat_does_not_raise_reopening_a_page_that_fills_the_budget(tmp_path):
     # concat_page_files reopens the per-page PNGs it just wrote. HUGE_A alone
-    # renders to ~229 Mpx at 200 dpi — no downscale needed, since that is
-    # under CANVAS_BUDGET_PX — but still well above PIL's own decompression-
-    # bomb threshold (~179 Mpx). Without the guard lifted for the duration of
-    # that reopen, this raised DecompressionBombError: an exception crash
-    # traded for the OOM crash this task fixes. Exactly a one-page
-    # subdocument of the document that caused it.
+    # renders to ~229 Mpx at 200 dpi, which exceeds the 200 Mpx CANVAS_BUDGET_PX,
+    # so it downscales to ~198 Mpx — but still well above PIL's own decompression-
+    # bomb threshold (~179 Mpx). This test exercises the guard that lifts PIL's
+    # bomb threshold for the duration of that reopen. Without it, this raised
+    # DecompressionBombError: an exception crash traded for the OOM crash this
+    # task fixes. Exactly a one-page subdocument of the document that caused it.
     pdf = _make_pdf(tmp_path / "in.pdf", [HUGE_A])
     rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
 

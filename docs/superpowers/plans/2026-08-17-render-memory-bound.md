@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- **`CANVAS_BUDGET_PX = 400_000_000`** (400 Mpx). Calibrated, not chosen for roundness — see **Plan amendment 1** below for how the original 200 Mpx figure was wrong and what replaced it. Do not change this value.
+- **`CANVAS_BUDGET_PX = 200_000_000`** (200 Mpx). Calibrated against **real subdocument canvases**, measured, not estimated — see **Plan amendment 3**, which supersedes the value set in Amendment 1. Do not change this value.
 - **The budget bounds the canvas's bounding box**, `max(width) × sum(heights)`, not the sum of the individual page areas. A narrow page still costs the full canvas width in white space, so the sum-of-areas figure understates what is actually allocated. See **Plan amendment 1**.
 - **PIL's decompression-bomb guard must be lifted only around images we rendered ourselves.** `Image.MAX_IMAGE_PIXELS` defaults to ~89.5 Mpx and `Image.open` raises above 179 Mpx, which is below the budget. The override belongs inside `concat_page_files`, restored in a `finally`, so the guard stays in force for `_fix_image_orientation`, which opens raw customer uploads. See **Plan amendment 2**.
 - **`MIN_DPI = 40`.** The floor below which the result stops being legible to the vision model. A pathological input gets a small image rather than an unreadable one, *even if that means exceeding the budget*.
@@ -40,7 +40,33 @@ Measured across **441 corpus PDFs**:
 So 200 Mpx broke the no-op guarantee on real corpus documents under *either* formula. Two changes follow:
 
 1. `render_dpi_for` budgets `max(w) × sum(h)` over the positive-area pages, not `sum(w × h)`. For a single page the two are identical, so the per-page call sites in Tasks 4 and 5 are unaffected; for uniform-width documents they are also identical.
-2. **`CANVAS_BUDGET_PX = 400_000_000`** — 21% margin over the 331.4 Mpx observed maximum. Canvas 1.2 GB; worst case, canvas plus one page, roughly 2.4 GB against the worker's 4 GiB. The failing document's 915.9 Mpx canvas lands at 132 dpi and a peak near 1.5 GB, down from 5.1 GB.
+2. The budget was raised to 400 Mpx on the strength of that whole-file measurement. **Amendment 3 supersedes this**: the measurement was of the wrong population, and the memory estimate that accompanied it was wrong too.
+
+### Amendment 3 — the budget was calibrated on the wrong population (supersedes Amendment 1's value)
+
+Amendment 1 corrected the *formula* and that correction stands. Its *value* was still wrong, because it was calibrated on whole-file bounding boxes. **Production renders subdocuments, not whole files.** A 26-page file whose whole-file canvas is 331.4 Mpx splits into subdocuments whose canvases are a fraction of that; the whole-file figure is only reachable on the split-fallback path, where no Beleg was found and image fidelity does not matter.
+
+513 real subdocument canvases from earlier pipeline runs were measured directly:
+
+| | |
+|---|---|
+| Median | **3.9 Mpx** — a single A4 page |
+| p99 | **73.5 Mpx** |
+| Above 200 Mpx | **2 of 513**, and both are the pathological large-format documents this work exists to handle |
+
+Nothing at all sits between 73.5 Mpx and 223.3 Mpx. A 200 Mpx budget therefore clears the p99 real subdocument by 2.7× while catching exactly the documents it is meant to catch.
+
+Peak memory was then **measured** rather than estimated, on the crash document, and the earlier estimate was badly out:
+
+| Budget | Canvas | Peak RSS (render + concat) | of 4 GiB |
+|---|---|---|---|
+| 200 Mpx | 0.60 GB | **2.07 GB** | 48% |
+| 300 Mpx | 0.89 GB | 2.65 GB | 62% |
+| 400 Mpx | 1.19 GB | 3.38 GB | 79% |
+
+The full pipeline at 400 Mpx peaked at **3.69 GB** — 86% of the worker's limit, against the ~2.4 GB the plan had predicted. Peak RSS runs at roughly 2.8× the canvas bytes, so the budget is the dominant term and choosing it generously undoes the bound being added.
+
+**`CANVAS_BUDGET_PX = 200_000_000`**, which happens to restore the original constant — but for a reason the original never had. Streaming concatenation (Task 2) is what makes this safe at a lower budget: peak is canvas plus one page, not canvas plus every page.
 
 ### Amendment 2 — PIL's decompression-bomb guard fires in production
 
@@ -950,7 +976,7 @@ Expected: completes without being killed, and returns **at least one subdocument
 
 - [ ] **Step 3: Acceptance — the two no-op controls**
 
-`26551118700.pdf` and `26551430800.pdf`, also in the repository root, are the 33-page BPS claim files from the content-policy incident. Their bounding-box canvases at 200 dpi are **254.9 Mpx** and **191.5 Mpx** — both under the 400 Mpx budget. The first is a good control precisely because a single landscape page (1188 pt) widens its canvas to nearly twice its sum-of-areas figure, which is the effect Amendment 1 exists for.
+`26551118700.pdf` and `26551430800.pdf`, also in the repository root, are the 33-page BPS claim files from the content-policy incident. Their **whole-file** bounding-box canvases at 200 dpi are 254.9 Mpx and 191.5 Mpx, but production splits them into subdocuments whose canvases are far smaller — which is exactly the distinction Amendment 3 turns on. Expect no `render_downscaled` event from either; if one fires, read the page range it names before concluding anything, because a fired event here means a subdocument genuinely exceeded 200 Mpx rather than that the budget is too low.
 
 They are therefore the sharpest available test of the no-op guarantee: real production documents, near the top of the observed size range, that must render **exactly as they do today**.
 

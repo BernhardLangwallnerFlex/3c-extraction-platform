@@ -17,10 +17,12 @@ A4 = (595.0, 841.0)
 # The two page geometries from the document that caused the OOM, in points.
 HUGE_A = (4554.0, 6516.0)
 HUGE_B = (4177.0, 6095.0)
-# Neither HUGE_A nor HUGE_B alone exceeds the 400 Mpx budget (each renders to
-# ~229 Mpx at 200 dpi) — a real corpus page doesn't need to for the no-op
-# guarantee to matter. This one exists purely to exercise the
-# single-oversized-page path: no real corpus page is this large.
+# HUGE_A alone happens to exceed the current 200 Mpx budget too (it renders
+# to ~229 Mpx at 200 dpi), but the budget has already moved twice — this
+# constant exists so the single-oversized-page tests below don't depend on
+# where it's calibrated to: it's sized with enough margin over any
+# plausible budget to still require a downscale. No real corpus page is
+# this large.
 OVERSIZED_SINGLE = (7000.0, 10000.0)
 
 

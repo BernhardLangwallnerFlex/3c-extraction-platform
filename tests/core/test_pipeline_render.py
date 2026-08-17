@@ -138,12 +138,13 @@ def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
     # what has to fit, not their sum.
     #
     # Note: at ANALYZE_RENDER_DPI (150), the large page below renders to
-    # ~128.8 Mpx — comfortably under CANVAS_BUDGET_PX (400 Mpx, raised from
-    # 200 Mpx after this test was designed), so this no longer exercises an
+    # ~128.8 Mpx — comfortably under CANVAS_BUDGET_PX (200 Mpx, the budget
+    # calibrated against real subdocument canvases; it briefly went to 400
+    # Mpx and back — see core/rendering.py), so this no longer exercises an
     # actual downscale. It still pins the no-op guarantee (real document
     # geometry renders unchanged) and the per-page wiring (one image per
     # page, each individually checked against the budget rather than their
-    # sum). A single page large enough to force a downscale under the 400 Mpx
+    # sum). A single page large enough to force a downscale under this
     # budget renders to well above PIL's own decompression-bomb hard limit
     # (~179 Mpx) even after being scaled down to fit, so dimensions are read
     # via _png_dimensions rather than Image.open — same reason

@@ -23,16 +23,24 @@ from PIL import Image
 _log = structlog.get_logger()
 
 # Total rendered pixels one concatenated image — or one standalone page image
-# — may occupy. 400 Mpx as RGB is 1.2 GB; worst case, that canvas plus one
-# page alive at once, is roughly 2.4 GB against the worker's 4 GiB limit.
+# — may occupy.
 #
-# Calibrated, not chosen for roundness: measured across 441 corpus PDFs, the
-# largest bounding-box canvas — max(width) x sum(heights), what
-# concat_page_files actually allocates — is 331.4 Mpx at 200 dpi
-# (BPS_3.pdf). 400 Mpx is a 21% margin over that observed maximum. Every
-# document that works today therefore renders at exactly the dpi it renders
-# at today, byte for byte.
-CANVAS_BUDGET_PX = 400_000_000
+# Calibrated against real subdocument canvases, measured, not estimated: 513
+# subdocument canvases from earlier pipeline runs have a median of 3.9 Mpx (a
+# single A4 page) and a p99 of 73.5 Mpx, with nothing at all between 73.5 Mpx
+# and 223.3 Mpx — 200 Mpx clears that p99 by 2.7x while still catching
+# exactly the pathological large-format documents this work exists to
+# handle. Peak RSS was then measured directly on the crash document rather
+# than estimated, and runs at roughly 2.8x the canvas bytes — streaming
+# concatenation (peak is canvas plus one page, never canvas plus every page)
+# is what makes that ratio survivable — so this budget keeps the crash
+# document's peak near 2 GB against the worker's 4 GiB limit. A higher budget
+# was tried and measured worse: 400 Mpx peaked at 86% of the limit end to
+# end, against a much lower estimate, which is why the budget is chosen from
+# measurement and not headroom arithmetic. Every document whose canvas
+# already fits therefore renders at exactly the dpi it renders at today, byte
+# for byte.
+CANVAS_BUDGET_PX = 200_000_000
 
 # Below roughly this resolution, body text on a scanned page stops being
 # legible to the vision model. A pathological input gets a small image rather

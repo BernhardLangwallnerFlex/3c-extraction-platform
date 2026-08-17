@@ -74,7 +74,9 @@ Found by sampling RSS across a full acceptance run. With the split site bounded,
 
 The waste is plain once measured: a single page produced a **67 MB PNG**, and all five were held as base64 at once (318 MB accumulated). These blocks are sent with **`"detail": "low"`**, so the API downsamples them to roughly 512px tiles regardless — every one of those megabytes is bought and thrown away.
 
-**`ANALYZE_BUDGET_PX = 8_000_000`.** At 150 dpi an A4 page is 2.2 Mpx and an A3 page 4.4 Mpx, so **every ordinary page stays byte-identical** while the pathological pages drop from 128.8 Mpx to 8. This is Task 7.
+**`ANALYZE_BUDGET_PX = 8_000_000`.** At 150 dpi an A4 page is 2.2 Mpx and an A3 page 4.4 Mpx, so **every ordinary page stays byte-identical** while the pathological pages fall from 128.8 Mpx to roughly 9 Mpx — a 14× cut. This is Task 7.
+
+Note the pathological page lands slightly *above* the budget, not at it: fitting 4554 × 6516 pt under 8 Mpx would need about 37 dpi, and `MIN_DPI = 40` floors it first. That is the documented behaviour of the floor, not a defect — legibility wins over the budget at the extreme, and the memory win is already decisive.
 
 ### Amendment 2 — PIL's decompression-bomb guard fires in production
 

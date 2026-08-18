@@ -57,6 +57,7 @@ class MistralOCRProcessor:
                 pix = page.get_pixmap(dpi=dpi)
                 tmp_img = tempfile.mktemp(suffix=".png")
                 pix.save(tmp_img)
+                del pix
                 try:
                     markdown_by_page[page_num + 1] = self._process_image(tmp_img)
                 finally:

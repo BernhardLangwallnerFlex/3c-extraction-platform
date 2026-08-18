@@ -104,10 +104,12 @@ def test_single_page_filling_the_budget_concatenates_without_raising(tmp_path):
     # Finding 1: concat_page_files reopens the per-page PNGs it just wrote,
     # and a single large-format page can land within CANVAS_BUDGET_PX while
     # still exceeding PIL's own decompression-bomb threshold (~179 Mpx) — this
-    # HUGE_A-sized page renders to ~229 Mpx at 200 dpi, no downscale needed at
-    # all. Without the guard lifted inside concat_page_files this raised
-    # DecompressionBombError: an exception crash traded for the OOM crash
-    # this task fixes. Exactly a one-page subdocument of the failing document.
+    # HUGE_A-sized page renders to ~229 Mpx at 200 dpi, which exceeds the 200
+    # Mpx CANVAS_BUDGET_PX, so it downscales to ~198 Mpx — still comfortably
+    # above PIL's decompression-bomb threshold. Without the guard lifted
+    # inside concat_page_files this raised DecompressionBombError: an
+    # exception crash traded for the OOM crash this task fixes. Exactly a
+    # one-page subdocument of the failing document.
     pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0)])
     pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1]}, 1)
 

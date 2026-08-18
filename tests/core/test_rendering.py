@@ -170,6 +170,37 @@ def test_concat_matches_the_previous_implementation(tmp_path):
         assert new.convert("RGB").tobytes() == old.tobytes()
 
 
+def test_concat_matches_the_previous_implementation_with_mixed_page_widths(tmp_path):
+    # The interesting case: mixed page widths are exactly where the
+    # bounding-box canvas (as wide as the widest page) differs from the sum
+    # of each page's own area — the defect Amendment 1 was written for. Pages
+    # are deliberately small and at a low dpi, since only the width mismatch
+    # matters here, not scale.
+    pdf = _make_pdf(tmp_path / "in.pdf", [(300.0, 400.0), (200.0, 400.0), (350.0, 250.0)])
+
+    with fitz.open(pdf) as doc:
+        old_pages = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=72)
+            mode = "RGB" if pix.alpha == 0 else "RGBA"
+            old_pages.append(Image.frombytes(mode, [pix.width, pix.height], pix.samples))
+    old = Image.new(
+        "RGB",
+        (max(i.width for i in old_pages), sum(i.height for i in old_pages)),
+        color=(255, 255, 255),
+    )
+    y = 0
+    for img in old_pages:
+        old.paste(img, (0, y))
+        y += img.height
+
+    new_path = concat_page_files(
+        render_pdf_pages_to_files(pdf, tmp_path, base_dpi=72), tmp_path / "new.png"
+    )
+    with Image.open(new_path) as new:
+        assert new.convert("RGB").tobytes() == old.tobytes()
+
+
 def test_concat_holds_at_most_one_page_open_at_a_time(tmp_path, monkeypatch):
     # The whole point of the change: the canvas plus one page, not the canvas
     # plus every page. Asserted through a counting fake, not by measuring RSS.

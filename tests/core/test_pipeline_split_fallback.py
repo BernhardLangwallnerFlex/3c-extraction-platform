@@ -10,6 +10,7 @@ from pathlib import Path
 
 import fitz
 import pytest
+from PIL import Image
 
 from core.pipeline import Pipeline
 
@@ -23,6 +24,23 @@ class _CollectingStorage:
 
     def write_bytes(self, key, data, content_type=None):
         self.written.append(key)
+
+
+class _CapturingStorage(_CollectingStorage):
+    """Like _CollectingStorage, but also keeps the bytes so a test can check
+    the rendered image content, not just that a write happened."""
+
+    def __init__(self):
+        super().__init__()
+        self.blobs = {}
+
+    def write_text(self, key, text):
+        super().write_text(key, text)
+        self.blobs[key] = text.encode()
+
+    def write_bytes(self, key, data, content_type=None):
+        super().write_bytes(key, data)
+        self.blobs[key] = data
 
 
 @pytest.fixture
@@ -84,3 +102,40 @@ def test_no_pages_at_all_produces_no_subdocument(three_page_pdf, tmp_path):
     pipe.split_document_into_invoices()
 
     assert pipe.subdocuments == []
+
+
+def test_fallback_subdocument_renders_and_concatenates_correctly(three_page_pdf, tmp_path):
+    # The only path where a whole file's bounding box really is the canvas:
+    # analyze returned no invoice_pages, so split emits one subdocument
+    # spanning every page. Assert the render actually happened and produced
+    # the right pixels, not just that page_numbers cover every page — this is
+    # the render path test_pipeline_split_fallback.py otherwise never
+    # exercises.
+    pipe = _make_pipeline({"invoice_pages": {}}, three_page_pdf, tmp_path)
+    pipe.storage = _CapturingStorage()
+
+    pipe.split_document_into_invoices()
+
+    assert len(pipe.subdocuments) == 1
+    img_key = pipe.subdocuments[0].image_key
+
+    with fitz.open(three_page_pdf) as doc:
+        old_pages = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=200)
+            mode = "RGB" if pix.alpha == 0 else "RGBA"
+            old_pages.append(Image.frombytes(mode, [pix.width, pix.height], pix.samples))
+    expected = Image.new(
+        "RGB",
+        (max(i.width for i in old_pages), sum(i.height for i in old_pages)),
+        color=(255, 255, 255),
+    )
+    y = 0
+    for img in old_pages:
+        expected.paste(img, (0, y))
+        y += img.height
+
+    out = tmp_path / "written.png"
+    out.write_bytes(pipe.storage.blobs[img_key])
+    with Image.open(out) as actual:
+        assert actual.convert("RGB").tobytes() == expected.tobytes()

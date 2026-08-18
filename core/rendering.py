@@ -182,6 +182,8 @@ def concat_page_files(page_files: Sequence[tuple[Path, int, int]], out_path) -> 
         Image.MAX_IMAGE_PIXELS = prev_limit
 
     out_path = Path(out_path)
-    canvas.save(out_path)
-    canvas.close()
+    try:
+        canvas.save(out_path)
+    finally:
+        canvas.close()
     return out_path

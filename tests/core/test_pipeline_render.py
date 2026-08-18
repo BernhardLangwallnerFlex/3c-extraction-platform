@@ -136,24 +136,20 @@ def test_per_page_temp_files_do_not_survive(tmp_path):
 def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
     # Per-image budget: analyze sends pages as separate images, so each one is
     # what has to fit, not their sum. Unlike the subdocument render, analyze
-    # pages are checked against ANALYZE_BUDGET_PX (8 Mpx), not CANVAS_BUDGET_PX
+    # pages are checked against ANALYZE_BUDGET_PX (32 Mpx), not CANVAS_BUDGET_PX
     # (200 Mpx) — analyze's images go to the API with "detail": "low" and get
     # downsampled to ~512px tiles regardless, so there is nothing to buy by
     # rendering them any larger.
     #
     # At ANALYZE_RENDER_DPI (150), the large page below renders to ~128.8 Mpx
-    # before downscaling, well above the 8 Mpx budget, so this exercises a
-    # real downscale. Note this exact page (the real BPS crash geometry, 1.6 x
-    # 2.3 m) can't be brought under 8 Mpx without also dropping below
-    # MIN_DPI's legibility floor (40) — fitting it into ANALYZE_BUDGET_PX
-    # alone would need ~37 dpi. render_dpi_for's documented contract is that
-    # MIN_DPI wins in that case "even where that means exceeding the budget",
-    # so the true ceiling here is the MIN_DPI-floored render (~9.16 Mpx,
-    # still a ~14x reduction from the unbounded ~128.8 Mpx), not
-    # ANALYZE_BUDGET_PX itself. Dimensions are read via _png_dimensions
-    # rather than Image.open for consistency with the other tests in this
-    # file, and because production never reopens its own rendered output
-    # through PIL either.
+    # before downscaling, well above the 32 Mpx budget, so this exercises a
+    # real downscale. At this budget the required dpi (~74) stays comfortably
+    # above MIN_DPI's legibility floor (40) — unlike the narrower 8 Mpx value
+    # this constant briefly held, which forced this exact page (the real BPS
+    # crash geometry, 1.6 x 2.3 m) below the floor. So the cap holds exactly
+    # here: dimensions are read via _png_dimensions rather than Image.open
+    # for consistency with the other tests in this file, and because
+    # production never reopens its own rendered output through PIL either.
     import core.pipeline as pipeline
 
     pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0), (595.0, 841.0)])
@@ -258,7 +254,8 @@ def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
 def test_analyze_ordinary_pages_are_a_no_op_under_the_analyze_budget(tmp_path, monkeypatch):
     # The property that keeps ANALYZE_BUDGET_PX safe to ship: A4 (595 x 841 pt)
     # is 2.2 Mpx and A3 (842 x 1191 pt) is 4.4 Mpx at ANALYZE_RENDER_DPI (150),
-    # both comfortably under the 8 Mpx analyze budget, so ordinary pages must
+    # both comfortably under the 32 Mpx analyze budget (calibrated above the
+    # corpus p95 of 13.6 Mpx — see core/rendering.py), so ordinary pages must
     # render at exactly 150 dpi and come back byte-identical to today's output
     # — not merely "small enough by some other measure".
     import base64
@@ -298,21 +295,18 @@ def test_analyze_ordinary_pages_are_a_no_op_under_the_analyze_budget(tmp_path, m
 
 
 def test_analyze_pathological_page_is_capped_to_the_analyze_budget(tmp_path, monkeypatch):
-    # The pathological geometry from the brief: a 4554 x 6516 pt page (the
-    # real BPS crash page, 1.6 x 2.3 m) is 128.8 Mpx at ANALYZE_RENDER_DPI
-    # (150) — comfortably under CANVAS_BUDGET_PX (200 Mpx) but nearly 16x the
-    # 8 Mpx analyze budget — so this is the case ANALYZE_BUDGET_PX exists to
-    # catch, distinct from the subdocument render's much larger budget.
+    # The pathological geometry: a 4554 x 6516 pt page (the real BPS crash
+    # page, 1.6 x 2.3 m) is 128.8 Mpx at ANALYZE_RENDER_DPI (150) —
+    # comfortably under CANVAS_BUDGET_PX (200 Mpx) but 4x the 32 Mpx analyze
+    # budget — so this is the case ANALYZE_BUDGET_PX exists to catch,
+    # distinct from the subdocument render's much larger budget.
     #
-    # Verified finding: this exact page can't be brought under 8 Mpx without
-    # also dropping below MIN_DPI's legibility floor (40) — fitting it into
-    # ANALYZE_BUDGET_PX alone would compute ~37 dpi. render_dpi_for's
-    # documented contract has MIN_DPI win that tie "even where that means
-    # exceeding the budget" (core/rendering.py), the same trade-off
-    # CANVAS_BUDGET_PX already accepts elsewhere. So the real ceiling for
-    # this page is the MIN_DPI-floored render (~9.16 Mpx), not
-    # ANALYZE_BUDGET_PX itself — still a ~14x reduction from the unbounded
-    # ~128.8 Mpx this test would have produced before this change.
+    # At 32 Mpx the required dpi (~74) stays comfortably above MIN_DPI's
+    # legibility floor (40), so — unlike the narrower 8 Mpx value this
+    # constant briefly held, which forced this exact page below the floor to
+    # ~9.16 Mpx, over budget — the cap now holds exactly: the rendered image
+    # must fit within ANALYZE_BUDGET_PX, and the MIN_DPI floor must not
+    # engage.
     import base64
 
     import core.pipeline as pipeline
@@ -343,7 +337,8 @@ def test_analyze_pathological_page_is_capped_to_the_analyze_budget(tmp_path, mon
     expected_dpi = render_dpi_for(
         [page_size], pipeline.ANALYZE_RENDER_DPI, budget_px=ANALYZE_BUDGET_PX
     )
-    assert expected_dpi == MIN_DPI  # confirms this page does hit the floor
+    assert expected_dpi > MIN_DPI  # confirms the floor does NOT engage at this budget
     with fitz.open(pdf) as doc:
         expected_pix = doc[0].get_pixmap(dpi=expected_dpi)
     assert (width, height) == (expected_pix.width, expected_pix.height)
+    assert width * height <= ANALYZE_BUDGET_PX

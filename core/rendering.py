@@ -53,9 +53,16 @@ MIN_DPI = 40
 # 67 MB PNG, and holding five of them as base64 put the analyze loop at 2.41 GB,
 # the pipeline's ceiling once the split site was bounded.
 #
-# 8 Mpx leaves every ordinary page untouched — A4 at 150 dpi is 2.2 Mpx and A3
-# is 4.4 Mpx — while capping the pathological ones.
-ANALYZE_BUDGET_PX = 8_000_000
+# Calibrated against the corpus, not against A4/A3 alone: measuring the
+# largest page of each of 441 corpus PDFs at 150 dpi gives a p95 of 13.6 Mpx
+# and a p99 of 48.5 Mpx — the corpus is full of large-format scans, not just
+# A4. 32 Mpx sits above that p95, so ordinary pages, including large-format
+# scans, render unchanged, while the extreme tail (14 of 441 files) is capped.
+# The worst page measured still falls from 128.8 Mpx to 32 Mpx — its pixmap
+# from 386 MB to 96 MB — most of the memory win, for a fraction of the
+# documents touched. An earlier, narrower value (8 Mpx, justified only against
+# A4/A3) would have touched 64 of 441 files instead of 14.
+ANALYZE_BUDGET_PX = 32_000_000
 
 
 def render_dpi_for(

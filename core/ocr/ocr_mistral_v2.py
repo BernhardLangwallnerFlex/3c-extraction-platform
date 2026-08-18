@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Union
 from mistralai import Mistral
 from tenacity import retry, stop_after_attempt, wait_exponential
+from core.rendering import render_dpi_for
 from core.utils import encode_image_to_base64, log_retry
 
 
@@ -50,9 +51,13 @@ class MistralOCRProcessor:
         with fitz.open(pdf_path) as doc:
             for page_num in range(len(doc)):
                 page = doc[page_num]
-                pix = page.get_pixmap(dpi=200)
+                # One page at a time, but a large-format page at a fixed 200 dpi
+                # is still hundreds of megabytes.
+                dpi = render_dpi_for([(page.rect.width, page.rect.height)], 200)
+                pix = page.get_pixmap(dpi=dpi)
                 tmp_img = tempfile.mktemp(suffix=".png")
                 pix.save(tmp_img)
+                del pix
                 try:
                     markdown_by_page[page_num + 1] = self._process_image(tmp_img)
                 finally:

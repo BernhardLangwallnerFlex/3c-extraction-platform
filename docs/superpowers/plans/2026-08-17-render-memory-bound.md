@@ -12,13 +12,99 @@
 
 ## Global Constraints
 
-- **`CANVAS_BUDGET_PX = 200_000_000`** (200 Mpx). Calibrated, not chosen for roundness: the largest whole file in the three regression corpora renders to **141.8 Mpx** at 200 dpi, and a subdocument is a subset of a file. Do not change this value.
+- **`CANVAS_BUDGET_PX = 200_000_000`** (200 Mpx). Calibrated against **real subdocument canvases**, measured, not estimated — see **Plan amendment 3**, which supersedes the value set in Amendment 1. Do not change this value.
+- **The budget bounds the canvas's bounding box**, `max(width) × sum(heights)`, not the sum of the individual page areas. A narrow page still costs the full canvas width in white space, so the sum-of-areas figure understates what is actually allocated. See **Plan amendment 1**.
+- **PIL's decompression-bomb guard must be lifted only around images we rendered ourselves.** `Image.MAX_IMAGE_PIXELS` defaults to ~89.5 Mpx and `Image.open` raises above 179 Mpx, which is below the budget. The override belongs inside `concat_page_files`, restored in a `finally`, so the guard stays in force for `_fix_image_orientation`, which opens raw customer uploads. See **Plan amendment 2**.
 - **`MIN_DPI = 40`.** The floor below which the result stops being legible to the vision model. A pathological input gets a small image rather than an unreadable one, *even if that means exceeding the budget*.
 - **The no-op guarantee:** a document whose pages already fit the budget must render at exactly the dpi it renders at today, producing byte-identical images. `render_dpi_for` returns `base_dpi` unchanged in that case. This is what makes the regression sweep meaningful, and it is the single most important property in this plan.
 - **No API contract change.** No new field, no change to `returncode`, `returncodeReasons`, `qualityFlags` or `warnings`. Downscaling is explicitly **not** a `qualityFlags` entry — the API downsamples large images anyway, so flagging it would train the consumer to treat a normal result as suspect.
 - Existing render dpi values are preserved as the *base*: 200 for subdocument images and Mistral OCR, 150 for analyze, orientation detection and `convert_file_to_images`.
 - German user-facing strings: none are added or changed by this work.
 - Tests live under `tests/core/`. Run with `.venv/bin/python -m pytest tests/`.
+
+## Plan amendments
+
+Both were found during Task 3 and settled with the maintainer before Task 4. The task text below still shows the original code; where it disagrees with an amendment, **the amendment governs**.
+
+### Amendment 1 — the budget was calibrated on the wrong quantity
+
+The spec justified 200 Mpx with "the largest whole file in the three regression corpora is 141.8 Mpx at 200 dpi". That figure is the **sum of the individual page areas**. The canvas `concat_page_files` actually allocates is the **bounding box**: as wide as the widest page, as tall as every page stacked. A single landscape page in an otherwise-A4 document widens all 33 pages' worth of canvas.
+
+Measured across **441 corpus PDFs**:
+
+| Quantity | Max observed | File |
+|---|---|---|
+| Sum of page areas | 227.2 Mpx | `230074677P_Splitt.pdf` |
+| **Bounding-box canvas** | **331.4 Mpx** | `BPS_3.pdf` (141.8 Mpx by the old measure — 2.34× understated) |
+
+So 200 Mpx broke the no-op guarantee on real corpus documents under *either* formula. Two changes follow:
+
+1. `render_dpi_for` budgets `max(w) × sum(h)` over the positive-area pages, not `sum(w × h)`. For a single page the two are identical, so the per-page call sites in Tasks 4 and 5 are unaffected; for uniform-width documents they are also identical.
+2. The budget was raised to 400 Mpx on the strength of that whole-file measurement. **Amendment 3 supersedes this**: the measurement was of the wrong population, and the memory estimate that accompanied it was wrong too.
+
+### Amendment 3 — the budget was calibrated on the wrong population (supersedes Amendment 1's value)
+
+Amendment 1 corrected the *formula* and that correction stands. Its *value* was still wrong, because it was calibrated on whole-file bounding boxes. **Production renders subdocuments, not whole files.** A 26-page file whose whole-file canvas is 331.4 Mpx splits into subdocuments whose canvases are a fraction of that; the whole-file figure is only reachable on the split-fallback path, where no Beleg was found and image fidelity does not matter.
+
+513 real subdocument canvases from earlier pipeline runs were measured directly:
+
+| | |
+|---|---|
+| Median | **3.9 Mpx** — a single A4 page |
+| p99 | **73.5 Mpx** |
+| Above 200 Mpx | **2 of 513**, and both are the pathological large-format documents this work exists to handle |
+
+Nothing at all sits between 73.5 Mpx and 223.3 Mpx. A 200 Mpx budget therefore clears the p99 real subdocument by 2.7× while catching exactly the documents it is meant to catch.
+
+Peak memory was then **measured** rather than estimated, on the crash document, and the earlier estimate was badly out:
+
+| Budget | Canvas | Peak RSS (render + concat) | of 4 GiB |
+|---|---|---|---|
+| 200 Mpx | 0.60 GB | **2.07 GB** | 48% |
+| 300 Mpx | 0.89 GB | 2.65 GB | 62% |
+| 400 Mpx | 1.19 GB | 3.38 GB | 79% |
+
+The full pipeline at 400 Mpx peaked at **3.69 GB** — 86% of the worker's limit, against the ~2.4 GB the plan had predicted. Peak RSS runs at roughly 2.8× the canvas bytes, so the budget is the dominant term and choosing it generously undoes the bound being added.
+
+**`CANVAS_BUDGET_PX = 200_000_000`**, which happens to restore the original constant — but for a reason the original never had. Streaming concatenation (Task 2) is what makes this safe at a lower budget: peak is canvas plus one page, not canvas plus every page.
+
+### Amendment 4 — analyze needs its own, much smaller budget (adds Task 7)
+
+Found by sampling RSS across a full acceptance run. With the split site bounded, **the pipeline's memory peak moved to `analyze_document`** — 4.62 GB high-water across the run, and 2.41 GB for its render loop measured on its own. The shared 200 Mpx per-image budget never binds there, because the pathological pages are 128.8 Mpx at 150 dpi.
+
+The waste is plain once measured: a single page produced a **67 MB PNG**, and all five were held as base64 at once (318 MB accumulated). These blocks are sent with **`"detail": "low"`**, so the API downsamples them to roughly 512px tiles regardless — every one of those megabytes is bought and thrown away.
+
+**`ANALYZE_BUDGET_PX = 32_000_000`.** This is Task 7.
+
+The value was first set at 8 Mpx on the reasoning that A4 (2.2 Mpx) and A3 (4.4 Mpx) at 150 dpi sit comfortably below it. That reasoning was right about A4 and A3 and wrong about the corpus: measuring the largest page of each of 441 corpus PDFs puts the **p90 at 8.70 Mpx**, so 8 Mpx sits at the ninetieth percentile and would have changed the analyze images for **64 of 441 files** — a far wider blast radius than "pathological documents".
+
+| Budget | Files touched | Pixmap per page |
+|---|---|---|
+| 8 Mpx | 64/441 (14.5%) | 24 MB |
+| 16 Mpx | 21/441 (4.8%) | 48 MB |
+| **32 Mpx** | **14/441 (3.2%)** | **96 MB** |
+| 50 Mpx | 2/441 (0.5%) | 150 MB |
+
+32 Mpx keeps nearly all of the memory win — the worst page still falls from 128.8 Mpx to 32, and its pixmap from 386 MB to 96 MB — while cutting the number of documents whose analyze input changes by 4.5×. That matters more than usual here because the regression sweep that would vouch for those documents is blocked (see *Verification status*).
+
+Corpus distribution, largest page per file at 150 dpi: median **2.18 Mpx**, p90 **8.70**, p95 **13.63**, p99 **48.46**, max **125.60**.
+
+### Amendment 2 — PIL's decompression-bomb guard fires in production
+
+`Image.MAX_IMAGE_PIXELS` defaults to 89,478,485 and `Image.open` raises `DecompressionBombError` above twice that (178,956,970) — **below the budget**. `concat_page_files` reopens the per-page PNGs it just wrote, so a single large-format page inside the budget raises. Verified empirically: a 4554 × 6516 pt page renders to 198.0 Mpx and `concat_page_files` raises. Left unfixed this trades an OOM crash for an exception crash.
+
+The override goes **in production code**, inside `concat_page_files`, restored in a `finally`:
+
+```python
+prev_limit = Image.MAX_IMAGE_PIXELS
+Image.MAX_IMAGE_PIXELS = None
+try:
+    ...open, paste and close each page...
+finally:
+    Image.MAX_IMAGE_PIXELS = prev_limit
+```
+
+Scoped deliberately: these are files this module rendered moments earlier, not untrusted input. `_fix_image_orientation` opens raw customer uploads directly and must keep the guard.
 
 ---
 
@@ -900,18 +986,31 @@ Expected: PASS, with a test count at least 219 + the new tests.
 
 - [ ] **Step 2: Acceptance — the document that caused the OOM**
 
-The five-page BPS document with 1.6 × 2.3 m pages, 854.7 Mpx at a fixed 200 dpi:
+`25K10201C91.pdf` in the repository root is the culprit: five pages, of which four are 4554 × 6516 pt and 4178 × 6095 pt, totalling **854.8 Mpx** at a fixed 200 dpi. (It is the same document as `~/Downloads/bps-oom-20260817-c16e5672.pdf`; measured geometry matches page for page.)
 
 ```bash
 PRODUCT_NAME=bps STORAGE_BACKEND=local CLEANUP_ARTIFACTS=false \
-  .venv/bin/python scripts/extract_local.py ~/Downloads/bps-oom-20260817-c16e5672.pdf
+  .venv/bin/python scripts/extract_local.py 25K10201C91.pdf
 ```
 
 Expected: completes without being killed, and returns **at least one subdocument**. Confirm in the logs that a `render_downscaled` event fired — if it did not, the budget was never exercised and the run proves nothing about this fix. Note the resulting dpi.
 
-It is customer data and must not be committed.
+- [ ] **Step 3: Acceptance — the two no-op controls**
 
-- [ ] **Step 3: Regression sweep — the no-op guarantee**
+`26551118700.pdf` and `26551430800.pdf`, also in the repository root, are the 33-page BPS claim files from the content-policy incident. Their **whole-file** bounding-box canvases at 200 dpi are 254.9 Mpx and 191.5 Mpx, but production splits them into subdocuments whose canvases are far smaller — which is exactly the distinction Amendment 3 turns on. Expect no `render_downscaled` event from either; if one fires, read the page range it names before concluding anything, because a fired event here means a subdocument genuinely exceeded 200 Mpx rather than that the budget is too low.
+
+They are therefore the sharpest available test of the no-op guarantee: real production documents, near the top of the observed size range, that must render **exactly as they do today**.
+
+```bash
+PRODUCT_NAME=bps STORAGE_BACKEND=local CLEANUP_ARTIFACTS=false \
+  .venv/bin/python scripts/extract_local.py 26551118700.pdf
+```
+
+Expected: no `render_downscaled` event at all. One firing here would mean the budget is biting real documents and the calibration is wrong — stop and report rather than proceeding.
+
+All three are customer data. They are covered by the `*.pdf` rule in `.gitignore`; never commit them or paste their contents.
+
+- [ ] **Step 4: Regression sweep — the no-op guarantee at corpus scale**
 
 This is the gate that matters. Every document in the corpora should render at exactly the dpi it rendered at before, so results should be unchanged:
 
@@ -919,16 +1018,139 @@ This is the gate that matters. Every document in the corpora should render at ex
 .venv/bin/python scripts/returncode_sweep.py <corpus-dir> --expect 100
 ```
 
-Run for all three corpora. Expected: green, matching the 29 PDFs / 37 subdocuments baseline. A `render_downscaled` event anywhere in the sweep means a corpus document exceeded the budget — investigate before merging, because the calibration said none should.
+Run for all three corpora. Expected: green, matching the 29 PDFs / 37 subdocuments baseline. A `render_downscaled` event anywhere in the sweep means a corpus document exceeded the budget — investigate before merging, because the calibration in Amendment 1 says none should.
 
-- [ ] **Step 4: Regression check, if its references are still valid**
+Measure the **actual** canvas, not the predicted one. Amendment 1 exists because a proxy figure was trusted over the thing being allocated; the check that would have caught it is confirming no written subdocument PNG exceeds `CANVAS_BUDGET_PX`.
+
+- [ ] **Step 5: Regression check, if its references are still valid**
 
 Run: `.venv/bin/python scripts/regression_check.py`
 If its stored references predate the returncode work they may be stale — if so, say so rather than treating a mismatch as a failure of this change.
 
-- [ ] **Step 5: Commit any evidence worth keeping**
+- [ ] **Step 6: Commit any evidence worth keeping**
 
 No code commit is expected here. Report the acceptance dpi, the sweep result, and the unit test count.
+
+---
+
+### Task 7: A separate, much smaller budget for analyze
+
+Added by **Amendment 4**. `analyze_document` is the pipeline's memory ceiling now that the split site is bounded, and the memory it spends is spent on nothing: its images go to the API with `"detail": "low"`.
+
+**Files:**
+- Modify: `core/rendering.py` (add the constant)
+- Modify: `core/pipeline.py` (`analyze_document` — pass the new budget)
+- Test: `tests/core/test_pipeline_render.py` (append)
+
+**Interfaces:**
+- Consumes: `render_dpi_for` from Task 1.
+- Produces: `ANALYZE_BUDGET_PX = 32_000_000` in `core/rendering.py`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Two properties matter, and the first is the one that keeps this safe:
+
+1. **No-op for ordinary pages.** An A4 page (595 × 841 pt) and an A3 page (842 × 1191 pt) at 150 dpi are 2.2 and 4.4 Mpx, both far under 32 Mpx, so both must render at exactly 150 dpi and produce byte-identical images to today.
+2. **The pathological page is capped.** A 4554 × 6516 pt page is 128.8 Mpx at 150 dpi and must come back at or under 32 Mpx. Unlike the 8 Mpx value this replaces, 32 Mpx is reachable without hitting the `MIN_DPI = 40` floor, so the cap holds exactly.
+
+Measure the resulting images with the existing `_png_dimensions` helper, which reads the PNG header via `struct` — do not use `Image.open`. Follow the pattern of the spy test already in this file for reaching into `analyze_document`'s content blocks.
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py -v`
+Expected: the cap test FAILS (the page renders at 128.8 Mpx); the no-op tests already pass and must keep passing.
+
+- [ ] **Step 3: Write the implementation**
+
+In `core/rendering.py`, beside `CANVAS_BUDGET_PX`:
+
+```python
+# The analyze step sends one image per page with "detail": "low", which the API
+# downsamples to roughly 512px tiles — so resolution beyond a legible page scan
+# is bought and thrown away. Measured: a single large-format page produced a
+# 67 MB PNG, and holding five of them as base64 put the analyze loop at 2.41 GB,
+# the pipeline's ceiling once the split site was bounded.
+#
+# 32 Mpx sits above the corpus p95 (13.6 Mpx) so ordinary pages — including
+# large-format scans — stay byte-identical, while capping the extremes.
+ANALYZE_BUDGET_PX = 32_000_000
+```
+
+In `core/pipeline.py`, `analyze_document`, pass it explicitly:
+
+```python
+                    dpi = render_dpi_for(
+                        [(page.rect.width, page.rect.height)],
+                        ANALYZE_RENDER_DPI,
+                        budget_px=ANALYZE_BUDGET_PX,
+                    )
+```
+
+and add `ANALYZE_BUDGET_PX` to the `core.rendering` import.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py -v`, then the full suite.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add core/rendering.py core/pipeline.py tests/core/test_pipeline_render.py
+git commit -m "fix: give analyze its own budget — detail:low does not need 67 MB pages"
+```
+
+---
+
+## Verification status
+
+Recorded 2026-08-18, at the end of the branch.
+
+**Passed:**
+
+- **Full unit suite** — 247 passing, warning-free.
+- **Acceptance on the crash document** (`25K10201C91.pdf`, 854.8 Mpx at a fixed 200 dpi). Exit 0, where production was SIGKILLed three times. Returns 1 Beleg, `returncode` 100, 7 line items, flagged `SINGLE_ENGINE_OCR` — the first real-world firing of that flag, since Mistral rejected the oversized pages. `render_downscaled` fired at 200 → 95 dpi.
+- **Peak RSS, sampled across the whole run:** 4.62 GB before the analyze budget, **2.86 GB** after. Against a 4 GiB worker limit.
+- **No-op control** `26551118700.pdf` (33 pages): completed with **zero** `render_downscaled` events, 4 subdocuments, all `returncode` 100.
+- **Arithmetic no-op argument across 444 PDFs**, with a stated limit. A subdocument's canvas cannot exceed its whole file's bounding box, so a whole-file figure under budget implies every subdocument of it renders byte-identically. On that basis **439 of 444 are untouched** at the split site; only 5 could possibly downscale, and 2 of those are the pathological documents this work targets.
+
+  **The premise holds for the geometry as uploaded, which is not always the geometry that gets rendered.** `_fix_pdf_orientation` may rewrite the input with pages rotated 90°, and the bounding box is *not* rotation-invariant: one portrait page turned landscape in an otherwise-portrait document widens the whole canvas by roughly 40% for A4. The subdocument ⊆ whole-file inequality is sound; the measurement feeding it is pre-rotation. The exposure is small — only 5 files sit anywhere near the line and the median real subdocument canvas is 3.9 Mpx — and the failure mode is benign, a document downscaling when the arithmetic said it would not. But it is an argument about uploaded geometry, not a proof about rendered geometry, and the sweep is what closes the gap.
+
+**The regression sweep — PASSED (2026-08-18).** All three corpora, `--expect 100`:
+
+| Corpus | PDFs | Result |
+|---|---|---|
+| `bps_sanierer_input/BPS_Input` | 7 | all 100 |
+| `bps_sanierer_input/Sanierer_Input` | 7 | all 100 |
+| `3C_testdaten_pdf` | 15 | all 100 |
+
+**29 PDFs, 37 subdocuments — exactly the pre-existing baseline** — and **zero `render_downscaled` events anywhere**. That last figure is the important one: no document downscaled, so every image was byte-identical to what the old code produced. The guarantee is not "results happened to match" but "the inputs were provably the same", which is the strongest form it can take.
+
+`BPS_3.pdf` is the empirical confirmation of Amendment 3. Its whole-file canvas is 331.4 Mpx, far over the 200 Mpx budget, and it did not downscale — because production splits it and its subdocuments sit under budget. That is the whole-file-versus-subdocument distinction, verified rather than argued.
+
+Also zero `VISION_DROPPED`, zero `ocr_engine_failed` and zero rate-limit errors across the run.
+
+**On the earlier 429s.** They were not a missing capacity raise — `gpt-5.4` is at GlobalStandard capacity **50**, up from the 1 fixed earlier. 50 means 50K TPM, and a 33-page analyze call carries the entire OCR markdown alongside the page images, so one document can consume most of a minute's quota. The failures came from firing documents back to back with no gap. The sweep runs sequentially with multi-minute documents and paced itself naturally: zero 429s across 29 PDFs.
+
+**The gate is now satisfied.** It was worth treating as hard rather than a formality, for a reason easy to understate. `analyze_document`'s images do not merely inform fidelity — **they decide which pages belong to which sub-invoice.** A changed image can therefore change the split itself, not just the values read off it. The `detail: low` argument makes that unlikely, since the API downsamples to roughly 512px tiles regardless, but unlikely is not verified, and a wrong split is a wrong Vorgang.
+
+No corpus document downscaled at either site, so no analyze input changed and no split could have shifted. The 14 files identified as at risk under the 32 Mpx budget are all outside these corpora; the rotation caveat on the arithmetic argument is moot for the swept set, since the sweep exercised the real rendered geometry rather than the uploaded geometry.
+
+---
+
+## Deployment prerequisite — worker memory
+
+**Raise the worker containers from 4 GiB to 8 GiB before or with this deploy.**
+
+The render bound is what makes this a headroom decision rather than a blank cheque. With the split site and analyze bounded, the crash document's peak sits at **4.16 GB against a 4 GiB (4.29 GB) limit — 97%**. Tracing the peak by phase puts it between `invoice_created` and the first retry: the **OCR phase**, where Mistral renders each page under the 200 Mpx canvas budget and its render loop alone measures 2.38 GB.
+
+Capping OCR resolution was considered and rejected. Unlike analyze's `detail: low` images — which the API downsamples regardless, making a cap free — OCR resolution feeds text recognition directly, and a 48 Mpx cap would change OCR input for 20 of 441 corpus files with no sweep available to vouch for them. Memory is the cheap side of that trade.
+
+Two things to check when applying it:
+
+- **Container Apps couples CPU and memory** — memory in GiB must be twice the CPU count, so 8 GiB requires 4 CPU. That doubles compute per replica, not just memory. Confirm the current allocation before assuming the delta.
+- **No CPU or memory setting exists anywhere in this repository** — not in `deploy.sh`, not in `scripts/provision_product.sh`, not in `azure_deployment_plan.md`. The workers run on whatever was set manually or defaulted. Worth pinning it in `provision_product.sh` while making this change, so the next product does not inherit a limit nobody chose.
+
+Without this, the branch still fixes the crash — 5.1 GB down to 4.16 GB, and acceptance passes end to end — but a document somewhat larger than the one that caused this would still be at risk.
 
 ---
 

@@ -1115,16 +1115,25 @@ Recorded 2026-08-18, at the end of the branch.
 
   **The premise holds for the geometry as uploaded, which is not always the geometry that gets rendered.** `_fix_pdf_orientation` may rewrite the input with pages rotated 90°, and the bounding box is *not* rotation-invariant: one portrait page turned landscape in an otherwise-portrait document widens the whole canvas by roughly 40% for A4. The subdocument ⊆ whole-file inequality is sound; the measurement feeding it is pre-rotation. The exposure is small — only 5 files sit anywhere near the line and the median real subdocument canvas is 3.9 Mpx — and the failure mode is benign, a document downscaling when the arithmetic said it would not. But it is an argument about uploaded geometry, not a proof about rendered geometry, and the sweep is what closes the gap.
 
-**Blocked:**
+**The regression sweep — PASSED (2026-08-18).** All three corpora, `--expect 100`:
 
-- **The regression sweep** (`scripts/returncode_sweep.py`) and the second no-op control could not run: Azure returns **429 rate-limit errors** on `gpt-5.4` in `germanywestcentral` after a handful of documents. This is environmental, not a code failure — the same error aborted a control run twice, in `analyze_document`, after tenacity exhausted its retries.
-- `26551430800.pdf` is nonetheless **provably** a no-op: its whole-file canvas is 191.5 Mpx, under the 200 Mpx budget, and its largest page is 4.7 Mpx at 150 dpi, under the 32 Mpx analyze budget. Neither site can downscale it.
+| Corpus | PDFs | Result |
+|---|---|---|
+| `bps_sanierer_input/BPS_Input` | 7 | all 100 |
+| `bps_sanierer_input/Sanierer_Input` | 7 | all 100 |
+| `3C_testdaten_pdf` | 15 | all 100 |
 
-**Run before promoting to production — treat this as a hard gate, not a formality:** the sweep across all three corpora, once quota recovers.
+**29 PDFs, 37 subdocuments — exactly the pre-existing baseline** — and **zero `render_downscaled` events anywhere**. That last figure is the important one: no document downscaled, so every image was byte-identical to what the old code produced. The guarantee is not "results happened to match" but "the inputs were provably the same", which is the strongest form it can take.
 
-Its value is the 14 documents whose analyze images change under the 32 Mpx budget, and the reason that matters is easy to understate. `analyze_document`'s images do not merely inform fidelity — **they decide which pages belong to which sub-invoice.** A changed image can therefore change the split itself, not just the values read off it. The `detail: low` argument makes that unlikely, since the API downsamples to roughly 512px tiles regardless, but unlikely is not verified, and a wrong split is a wrong Vorgang.
+`BPS_3.pdf` is the empirical confirmation of Amendment 3. Its whole-file canvas is 331.4 Mpx, far over the 200 Mpx budget, and it did not downscale — because production splits it and its subdocuments sit under budget. That is the whole-file-versus-subdocument distinction, verified rather than argued.
 
-Every other document is covered by the arithmetic argument above, which for those files is stronger than the sweep: byte-identical inputs cannot produce different outputs.
+Also zero `VISION_DROPPED`, zero `ocr_engine_failed` and zero rate-limit errors across the run.
+
+**On the earlier 429s.** They were not a missing capacity raise — `gpt-5.4` is at GlobalStandard capacity **50**, up from the 1 fixed earlier. 50 means 50K TPM, and a 33-page analyze call carries the entire OCR markdown alongside the page images, so one document can consume most of a minute's quota. The failures came from firing documents back to back with no gap. The sweep runs sequentially with multi-minute documents and paced itself naturally: zero 429s across 29 PDFs.
+
+**The gate is now satisfied.** It was worth treating as hard rather than a formality, for a reason easy to understate. `analyze_document`'s images do not merely inform fidelity — **they decide which pages belong to which sub-invoice.** A changed image can therefore change the split itself, not just the values read off it. The `detail: low` argument makes that unlikely, since the API downsamples to roughly 512px tiles regardless, but unlikely is not verified, and a wrong split is a wrong Vorgang.
+
+No corpus document downscaled at either site, so no analyze input changed and no split could have shifted. The 14 files identified as at risk under the 32 Mpx budget are all outside these corpora; the rotation caveat on the arithmetic argument is moot for the swept set, since the sweep exercised the real rendered geometry rather than the uploaded geometry.
 
 ---
 

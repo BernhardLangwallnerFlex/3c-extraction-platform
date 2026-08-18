@@ -1128,6 +1128,23 @@ Every other document is covered by the arithmetic argument above, which for thos
 
 ---
 
+## Deployment prerequisite — worker memory
+
+**Raise the worker containers from 4 GiB to 8 GiB before or with this deploy.**
+
+The render bound is what makes this a headroom decision rather than a blank cheque. With the split site and analyze bounded, the crash document's peak sits at **4.16 GB against a 4 GiB (4.29 GB) limit — 97%**. Tracing the peak by phase puts it between `invoice_created` and the first retry: the **OCR phase**, where Mistral renders each page under the 200 Mpx canvas budget and its render loop alone measures 2.38 GB.
+
+Capping OCR resolution was considered and rejected. Unlike analyze's `detail: low` images — which the API downsamples regardless, making a cap free — OCR resolution feeds text recognition directly, and a 48 Mpx cap would change OCR input for 20 of 441 corpus files with no sweep available to vouch for them. Memory is the cheap side of that trade.
+
+Two things to check when applying it:
+
+- **Container Apps couples CPU and memory** — memory in GiB must be twice the CPU count, so 8 GiB requires 4 CPU. That doubles compute per replica, not just memory. Confirm the current allocation before assuming the delta.
+- **No CPU or memory setting exists anywhere in this repository** — not in `deploy.sh`, not in `scripts/provision_product.sh`, not in `azure_deployment_plan.md`. The workers run on whatever was set manually or defaulted. Worth pinning it in `provision_product.sh` while making this change, so the next product does not inherit a limit nobody chose.
+
+Without this, the branch still fixes the crash — 5.1 GB down to 4.16 GB, and acceptance passes end to end — but a document somewhat larger than the one that caused this would still be at risk.
+
+---
+
 ## Release
 
 Ships in the same release as the returncode and content-policy work, currently on the test tier as `v20260817a` and awaiting 3C sign-off. This adds no contract change, so it does not complicate 3C's integration, and it fixes a live production crash.

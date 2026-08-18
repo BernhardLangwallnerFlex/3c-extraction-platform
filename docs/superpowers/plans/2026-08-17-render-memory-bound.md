@@ -1111,14 +1111,20 @@ Recorded 2026-08-18, at the end of the branch.
 - **Acceptance on the crash document** (`25K10201C91.pdf`, 854.8 Mpx at a fixed 200 dpi). Exit 0, where production was SIGKILLed three times. Returns 1 Beleg, `returncode` 100, 7 line items, flagged `SINGLE_ENGINE_OCR` — the first real-world firing of that flag, since Mistral rejected the oversized pages. `render_downscaled` fired at 200 → 95 dpi.
 - **Peak RSS, sampled across the whole run:** 4.62 GB before the analyze budget, **2.86 GB** after. Against a 4 GiB worker limit.
 - **No-op control** `26551118700.pdf` (33 pages): completed with **zero** `render_downscaled` events, 4 subdocuments, all `returncode` 100.
-- **Arithmetic no-op proof across 444 PDFs.** A subdocument's canvas cannot exceed its whole file's bounding box, so a whole-file figure under budget proves every subdocument of it renders byte-identically. **439 of 444 are provably untouched** at the split site; only 5 could possibly downscale, and 2 of those are the pathological documents this work targets.
+- **Arithmetic no-op argument across 444 PDFs**, with a stated limit. A subdocument's canvas cannot exceed its whole file's bounding box, so a whole-file figure under budget implies every subdocument of it renders byte-identically. On that basis **439 of 444 are untouched** at the split site; only 5 could possibly downscale, and 2 of those are the pathological documents this work targets.
+
+  **The premise holds for the geometry as uploaded, which is not always the geometry that gets rendered.** `_fix_pdf_orientation` may rewrite the input with pages rotated 90°, and the bounding box is *not* rotation-invariant: one portrait page turned landscape in an otherwise-portrait document widens the whole canvas by roughly 40% for A4. The subdocument ⊆ whole-file inequality is sound; the measurement feeding it is pre-rotation. The exposure is small — only 5 files sit anywhere near the line and the median real subdocument canvas is 3.9 Mpx — and the failure mode is benign, a document downscaling when the arithmetic said it would not. But it is an argument about uploaded geometry, not a proof about rendered geometry, and the sweep is what closes the gap.
 
 **Blocked:**
 
 - **The regression sweep** (`scripts/returncode_sweep.py`) and the second no-op control could not run: Azure returns **429 rate-limit errors** on `gpt-5.4` in `germanywestcentral` after a handful of documents. This is environmental, not a code failure — the same error aborted a control run twice, in `analyze_document`, after tenacity exhausted its retries.
 - `26551430800.pdf` is nonetheless **provably** a no-op: its whole-file canvas is 191.5 Mpx, under the 200 Mpx budget, and its largest page is 4.7 Mpx at 150 dpi, under the 32 Mpx analyze budget. Neither site can downscale it.
 
-**Run before promoting to production:** the sweep across all three corpora once quota recovers. Its remaining value is the 14 documents whose analyze images change under the 32 Mpx budget — every other document is covered by the arithmetic proof above, which is stronger than the sweep for those files because byte-identical inputs cannot produce different outputs.
+**Run before promoting to production — treat this as a hard gate, not a formality:** the sweep across all three corpora, once quota recovers.
+
+Its value is the 14 documents whose analyze images change under the 32 Mpx budget, and the reason that matters is easy to understate. `analyze_document`'s images do not merely inform fidelity — **they decide which pages belong to which sub-invoice.** A changed image can therefore change the split itself, not just the values read off it. The `detail: low` argument makes that unlikely, since the API downsamples to roughly 512px tiles regardless, but unlikely is not verified, and a wrong split is a wrong Vorgang.
+
+Every other document is covered by the arithmetic argument above, which for those files is stronger than the sweep: byte-identical inputs cannot produce different outputs.
 
 ---
 

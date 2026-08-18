@@ -74,9 +74,20 @@ Found by sampling RSS across a full acceptance run. With the split site bounded,
 
 The waste is plain once measured: a single page produced a **67 MB PNG**, and all five were held as base64 at once (318 MB accumulated). These blocks are sent with **`"detail": "low"`**, so the API downsamples them to roughly 512px tiles regardless — every one of those megabytes is bought and thrown away.
 
-**`ANALYZE_BUDGET_PX = 8_000_000`.** At 150 dpi an A4 page is 2.2 Mpx and an A3 page 4.4 Mpx, so **every ordinary page stays byte-identical** while the pathological pages fall from 128.8 Mpx to roughly 9 Mpx — a 14× cut. This is Task 7.
+**`ANALYZE_BUDGET_PX = 32_000_000`.** This is Task 7.
 
-Note the pathological page lands slightly *above* the budget, not at it: fitting 4554 × 6516 pt under 8 Mpx would need about 37 dpi, and `MIN_DPI = 40` floors it first. That is the documented behaviour of the floor, not a defect — legibility wins over the budget at the extreme, and the memory win is already decisive.
+The value was first set at 8 Mpx on the reasoning that A4 (2.2 Mpx) and A3 (4.4 Mpx) at 150 dpi sit comfortably below it. That reasoning was right about A4 and A3 and wrong about the corpus: measuring the largest page of each of 441 corpus PDFs puts the **p90 at 8.70 Mpx**, so 8 Mpx sits at the ninetieth percentile and would have changed the analyze images for **64 of 441 files** — a far wider blast radius than "pathological documents".
+
+| Budget | Files touched | Pixmap per page |
+|---|---|---|
+| 8 Mpx | 64/441 (14.5%) | 24 MB |
+| 16 Mpx | 21/441 (4.8%) | 48 MB |
+| **32 Mpx** | **14/441 (3.2%)** | **96 MB** |
+| 50 Mpx | 2/441 (0.5%) | 150 MB |
+
+32 Mpx keeps nearly all of the memory win — the worst page still falls from 128.8 Mpx to 32, and its pixmap from 386 MB to 96 MB — while cutting the number of documents whose analyze input changes by 4.5×. That matters more than usual here because the regression sweep that would vouch for those documents is blocked (see *Verification status*).
+
+Corpus distribution, largest page per file at 150 dpi: median **2.18 Mpx**, p90 **8.70**, p95 **13.63**, p99 **48.46**, max **125.60**.
 
 ### Amendment 2 — PIL's decompression-bomb guard fires in production
 
@@ -1033,14 +1044,14 @@ Added by **Amendment 4**. `analyze_document` is the pipeline's memory ceiling no
 
 **Interfaces:**
 - Consumes: `render_dpi_for` from Task 1.
-- Produces: `ANALYZE_BUDGET_PX = 8_000_000` in `core/rendering.py`.
+- Produces: `ANALYZE_BUDGET_PX = 32_000_000` in `core/rendering.py`.
 
 - [ ] **Step 1: Write the failing tests**
 
 Two properties matter, and the first is the one that keeps this safe:
 
-1. **No-op for ordinary pages.** An A4 page (595 × 841 pt) and an A3 page (842 × 1191 pt) at 150 dpi are 2.2 and 4.4 Mpx, both under 8 Mpx, so both must render at exactly 150 dpi and produce byte-identical images to today.
-2. **The pathological page is capped.** A 4554 × 6516 pt page is 128.8 Mpx at 150 dpi and must come back at or under 8 Mpx.
+1. **No-op for ordinary pages.** An A4 page (595 × 841 pt) and an A3 page (842 × 1191 pt) at 150 dpi are 2.2 and 4.4 Mpx, both far under 32 Mpx, so both must render at exactly 150 dpi and produce byte-identical images to today.
+2. **The pathological page is capped.** A 4554 × 6516 pt page is 128.8 Mpx at 150 dpi and must come back at or under 32 Mpx. Unlike the 8 Mpx value this replaces, 32 Mpx is reachable without hitting the `MIN_DPI = 40` floor, so the cap holds exactly.
 
 Measure the resulting images with the existing `_png_dimensions` helper, which reads the PNG header via `struct` — do not use `Image.open`. Follow the pattern of the spy test already in this file for reaching into `analyze_document`'s content blocks.
 
@@ -1060,9 +1071,9 @@ In `core/rendering.py`, beside `CANVAS_BUDGET_PX`:
 # 67 MB PNG, and holding five of them as base64 put the analyze loop at 2.41 GB,
 # the pipeline's ceiling once the split site was bounded.
 #
-# 8 Mpx leaves every ordinary page untouched — A4 at 150 dpi is 2.2 Mpx and A3
-# is 4.4 Mpx — while capping the pathological ones.
-ANALYZE_BUDGET_PX = 8_000_000
+# 32 Mpx sits above the corpus p95 (13.6 Mpx) so ordinary pages — including
+# large-format scans — stay byte-identical, while capping the extremes.
+ANALYZE_BUDGET_PX = 32_000_000
 ```
 
 In `core/pipeline.py`, `analyze_document`, pass it explicitly:
@@ -1087,6 +1098,27 @@ Run: `.venv/bin/python -m pytest tests/core/test_pipeline_render.py -v`, then th
 git add core/rendering.py core/pipeline.py tests/core/test_pipeline_render.py
 git commit -m "fix: give analyze its own budget — detail:low does not need 67 MB pages"
 ```
+
+---
+
+## Verification status
+
+Recorded 2026-08-18, at the end of the branch.
+
+**Passed:**
+
+- **Full unit suite** — 247 passing, warning-free.
+- **Acceptance on the crash document** (`25K10201C91.pdf`, 854.8 Mpx at a fixed 200 dpi). Exit 0, where production was SIGKILLed three times. Returns 1 Beleg, `returncode` 100, 7 line items, flagged `SINGLE_ENGINE_OCR` — the first real-world firing of that flag, since Mistral rejected the oversized pages. `render_downscaled` fired at 200 → 95 dpi.
+- **Peak RSS, sampled across the whole run:** 4.62 GB before the analyze budget, **2.86 GB** after. Against a 4 GiB worker limit.
+- **No-op control** `26551118700.pdf` (33 pages): completed with **zero** `render_downscaled` events, 4 subdocuments, all `returncode` 100.
+- **Arithmetic no-op proof across 444 PDFs.** A subdocument's canvas cannot exceed its whole file's bounding box, so a whole-file figure under budget proves every subdocument of it renders byte-identically. **439 of 444 are provably untouched** at the split site; only 5 could possibly downscale, and 2 of those are the pathological documents this work targets.
+
+**Blocked:**
+
+- **The regression sweep** (`scripts/returncode_sweep.py`) and the second no-op control could not run: Azure returns **429 rate-limit errors** on `gpt-5.4` in `germanywestcentral` after a handful of documents. This is environmental, not a code failure — the same error aborted a control run twice, in `analyze_document`, after tenacity exhausted its retries.
+- `26551430800.pdf` is nonetheless **provably** a no-op: its whole-file canvas is 191.5 Mpx, under the 200 Mpx budget, and its largest page is 4.7 Mpx at 150 dpi, under the 32 Mpx analyze budget. Neither site can downscale it.
+
+**Run before promoting to production:** the sweep across all three corpora once quota recovers. Its remaining value is the 14 documents whose analyze images change under the 32 Mpx budget — every other document is covered by the arithmetic proof above, which is stronger than the sweep for those files because byte-identical inputs cannot produce different outputs.
 
 ---
 

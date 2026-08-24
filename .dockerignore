@@ -1,34 +1,92 @@
 # Build context is uploaded to ACR on every `az acr build`. The Dockerfile only
-# needs requirements.prod.txt, core/, and products/, so exclude everything heavy.
+# needs requirements.prod.txt, core/ and products/, so exclude everything heavy.
+#
+# ============================================================================
+# DO NOT PUT A TRAILING SLASH ON A DIRECTORY RULE. It silently does nothing.
+# ============================================================================
+#
+# `az acr build` does not use Docker's .dockerignore parser. It builds the
+# context tarball itself, in azure/cli/command_modules/acr/_archive_utils.py,
+# and its IgnoreRule class strips a trailing slash ONLY inside the `if
+# rule.startswith('!')` branch — so negations like `!keep/` are normalised but
+# plain exclusions are not. `temp/` therefore compiles to the regex `^temp/$`
+# and is matched against the tar entry name `temp`, which never matches:
+#
+#     temp/          -> ^temp/$          vs "temp"  -> NO MATCH  (rule is dead)
+#     temp           -> ^temp$           vs "temp"  -> match     (works)
+#
+# Every directory rule in this file carried a trailing slash until 2026-08-24,
+# so none of them had ever taken effect. The context tarball was 2.8 GB (temp
+# 2.3 GB + test_uploads 494 MB) and took ~17 min to upload per product, ten
+# times longer than the 1m41s build. Only .venv escaped, and not because of
+# this file — the CLI hardcodes {'.venv'} in its own build_ignore_dirs list.
+#
+# Verify a change with tests/scripts/test_dockerignore.py, which drives the
+# real IgnoreRule class rather than assuming Docker semantics.
 
 # Virtualenv / caches
-.venv/
-__pycache__/
+.venv
+__pycache__
 *.pyc
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+.pytest_cache
+.mypy_cache
+.ruff_cache
 
 # Local processing artifacts and test data
-temp/
-files/
-3C_testdaten_pdf/
-3C_testdaten_jpg/
-3C_testdaten_json/
-3C_testdaten_md/
-old/
-benchmarks/
-notebooks/
+temp
+files
+3C_testdaten_pdf
+3C_testdaten_jpg
+3C_testdaten_json
+3C_testdaten_md
+old
+benchmarks
+notebooks
+
+# Local corpora and experiment scratch. None of it is COPYd by the Dockerfile.
+# test_uploads is the big one: 494 MB of real customer PDFs pulled on
+# 2026-07-29 for the artifact-retention work.
+test_uploads
+garagenhub_input
+GOT
+places_experiment
+handover_pruefung
+bps_sanierer_input
+Original_Testdaten
+extraction_suite
+viz_pages
+converted_images
+test_images
+test_docs
+images
+results
+outputs
 
 # Repo metadata / docs / dev-only
-.git/
-.github/
-docs/
-tests/
+.git
+.github
+docs
+tests
+scripts
+infra
 *.md
 .env
 .env.example
 .DS_Store
+
+# Loose media and data at the repo root. core/ and products/ hold only .py,
+# .pyc and three .json schemas, so these cannot mask anything the image needs.
+# Do NOT add *.json here — products/*/extract_schema.json is required.
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.avif
+*.webp
+*.csv
+*.log
+*.tmp
+*.bak
 
 # Dev-only requirements (prod uses requirements.prod.txt)
 requirements.txt

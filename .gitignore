@@ -129,6 +129,9 @@ GOT/
 bps_sanierer_input/
 handover_pruefung/
 places_experiment/
+# Its four files are .jpg/.jpeg/.png so the extension rules above already catch
+# them; named here so the directory is ignored explicitly rather than by luck.
+garagenhub_input/
 
 env_aws
 api_key_prod.txt

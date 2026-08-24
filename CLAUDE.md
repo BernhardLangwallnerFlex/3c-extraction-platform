@@ -107,7 +107,14 @@ See `.env.example` for the full list with defaults.
 ## Deployment
 Deployed on Azure Container Apps (API + worker) with Azure Cache for Redis (Basic C0), Azure Blob Storage, and Azure OpenAI. See `azure_deployment_plan.md` for full infrastructure details and `deploy.sh` for the deployment script. The Dockerfile sets `PYTHONPATH=/app`.
 
-Workers use KEDA scaling on Redis queue length (1200s cooldown), but **`min-replicas` is 1, not 0** — every worker is always-on. Scale-to-zero was given up as the mitigation for the KEDA scale-in kills (workers were being SIGTERMed mid-job); see `docs/HANDOVER-2026-08-18.md`. Current: workers `min 1 / max 5` (test tiers `max 2`), APIs `min 1 / max 3`.
+Workers use KEDA scaling on Redis queue length (1200s cooldown), but **every worker is `min-replicas 1`, not 0** — they are always-on. Scale-to-zero was given up as the mitigation for the KEDA scale-in kills (workers were being SIGTERMed mid-job); see `docs/HANDOVER-2026-08-18.md`. Verified 2026-08-24 across all twelve apps:
+
+| App | prod | test |
+|---|---|---|
+| `ca-api-<product>` | `1 / 3` | `0 / 2` |
+| `ca-worker-<product>` | `1 / 5` | `1 / 2` |
+
+Note the **test APIs are the only apps that still scale to zero**, so the first request to a `*-test` hostname after an idle period is a cold start — it can take well over 15s and will time out a short client deadline. Retry before concluding a test deploy is broken.
 
 One consequence worth knowing: because nothing scales to zero, an outage on the shared Redis hits all six worker apps at once rather than only the busy ones.
 

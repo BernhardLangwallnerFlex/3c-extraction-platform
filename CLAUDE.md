@@ -107,7 +107,9 @@ See `.env.example` for the full list with defaults.
 ## Deployment
 Deployed on Azure Container Apps (API + worker) with Azure Cache for Redis (Basic C0), Azure Blob Storage, and Azure OpenAI. See `azure_deployment_plan.md` for full infrastructure details and `deploy.sh` for the deployment script. The Dockerfile sets `PYTHONPATH=/app`.
 
-Worker is configured with `min-replicas 0` and KEDA scaling on Redis queue length (1200s cooldown). It scales to zero when idle and wakes on first enqueued job.
+Workers use KEDA scaling on Redis queue length (1200s cooldown), but **`min-replicas` is 1, not 0** — every worker is always-on. Scale-to-zero was given up as the mitigation for the KEDA scale-in kills (workers were being SIGTERMed mid-job); see `docs/HANDOVER-2026-08-18.md`. Current: workers `min 1 / max 5` (test tiers `max 2`), APIs `min 1 / max 3`.
+
+One consequence worth knowing: because nothing scales to zero, an outage on the shared Redis hits all six worker apps at once rather than only the busy ones.
 
 ### Two-tier deploys (prod + test)
 
@@ -143,3 +145,4 @@ All external API calls (Mistral OCR, Azure Document Intelligence, Azure OpenAI) 
 - **DualOCR fallback:** If one OCR engine fails after retries, the pipeline continues with the other engine's output. A `sentry_sdk.capture_message` (level=warning) fires so you can alert on degradation even when jobs succeed. Only raises if both engines fail.
 - **RQ job retry:** Jobs are enqueued with `Retry(max=2)` — if the entire pipeline fails, RQ re-enqueues up to 2 more times.
 - **Retry helper:** `utils.log_retry` is the shared tenacity `before_sleep` callback. Retried functions: `ocr_mistral_v2._process_image`, `ocr_azure_docintel.extract_text`, `processors.azure_processor._call_openai`, `invoice._call_analyze_llm`.
+- **Redis outages:** `jobs.worker.build_redis_connection()` gives the client a `Retry(ExponentialBackoff(1, 30), retries=15)` policy — ~331s of backoff, enough to ride out a Basic-tier patch reboot. This matters because RQ retries `redis.exceptions.ConnectionError` but treats the *sibling* `redis.exceptions.TimeoutError` as fatal ("Redis connection timeout, quitting..."), and redis-py's default is `retries=0`. Without the policy a single timeout exits the process and Container Apps crash-loops it — that is what turned a 2.5-minute outage on 2026-08-24 into 36 Sentry events. `connect_with_retry()` covers the same failure at cold start, where RQ is not yet in the loop. Note the shared cache is a **single Basic C0 node with no replica**, so it is a fleet-wide single point of failure for all 3 products across both tiers; upgrading to Standard C1 (replicated, 99.9% SLA) is the way to remove the outage class itself.

@@ -123,6 +123,14 @@ class Pipeline:
         # Fix page orientation before any OCR or image rendering
         self._fix_page_orientation()
 
+        # Everything downstream — splitting, rendering and its resolution
+        # bounds — is built for PDFs, and split_document_into_invoices refuses
+        # anything else. So an image upload becomes a one-page PDF here, once,
+        # and from then on takes exactly the path a scanned PDF does.
+        if self.file_type == "image":
+            self.local_input_path = self._image_to_pdf(self.local_input_path)
+            self.file_type = "pdf"
+
         if self.file_type == "pdf":
             with fitz.open(self.local_input_path) as doc:
                 self.page_number = len(doc)
@@ -186,6 +194,21 @@ class Pipeline:
             corrected_path = self.work_dir / f"corrected_{self.local_input_path.name}"
             corrected.save(str(corrected_path))
             self.local_input_path = corrected_path
+
+    def _image_to_pdf(self, image_path: Path) -> Path:
+        """Wrap an image upload in a one-page PDF, keeping its file stem.
+
+        The page carries the image at full resolution; the render path then
+        reads that resolution back as the page's native dpi and never renders
+        above it, whatever physical size the image metadata implies.
+        """
+        image_path = Path(image_path)
+        out_dir = self.work_dir / "converted"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"{image_path.stem}.pdf"
+        with fitz.open(image_path) as img_doc:
+            out_path.write_bytes(img_doc.convert_to_pdf())
+        return out_path
 
     @staticmethod
     def _detect_rotation(img: Image.Image) -> int:

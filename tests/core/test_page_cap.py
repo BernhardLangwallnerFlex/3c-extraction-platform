@@ -129,3 +129,23 @@ def test_capped_canvas_still_respects_the_budget(tmp_path):
     height = sum(h for _p, _w, h in rendered)
     assert width * height <= CANVAS_BUDGET_PX
 
+
+def test_image_upload_becomes_a_one_page_pdf_with_its_stem(tmp_path):
+    # split_document_into_invoices only accepts PDFs; an image upload is
+    # wrapped once at intake and then takes the scanned-PDF path, cap included.
+    img_path = tmp_path / "foto_rechnung.jpg"
+    Image.new("RGB", (3024, 4032), "white").save(img_path, "JPEG", dpi=(72, 72))
+
+    pipe = object.__new__(Pipeline)
+    pipe.work_dir = tmp_path
+    out = pipe._image_to_pdf(img_path)
+
+    assert out.suffix == ".pdf" and out.stem == "foto_rechnung"
+    with fitz.open(out) as doc:
+        assert len(doc) == 1
+        page = doc[0]
+        info = page.get_image_info()[0]
+        assert (info["width"], info["height"]) == (3024, 4032)
+        pix = page.get_pixmap(dpi=_page_dpi(page))
+    assert min(pix.width, pix.height) <= PAGE_SHORT_SIDE_PX
+    assert pix.width <= 3024

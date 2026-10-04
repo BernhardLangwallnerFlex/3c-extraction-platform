@@ -9,7 +9,9 @@ the CANVAS_BUDGET_PX constant — asserting "the output stays under budget"
 would pass identically before and after the fix and prove nothing. So these
 tests assert the call contract instead: each site must consult render_dpi_for
 per page with the right base dpi, and must render at the dpi it returns
-rather than the hardcoded base dpi.
+rather than the hardcoded base dpi. They switch the per-page cap off, because
+on these oversized pages it would lower the dpi further; the cap's own call
+contract is asserted separately at the end of this file.
 """
 import struct
 from pathlib import Path
@@ -48,6 +50,7 @@ def _png_dimensions(data):
 
 
 def test_convert_file_to_images_honours_render_dpi_for(tmp_path, monkeypatch):
+    monkeypatch.setenv("RENDER_PAGE_SHORT_SIDE_PX", "0")  # isolate the budget from the per-page cap
     from core import utils
 
     pdf = _make_pdf(tmp_path / "in.pdf", [HUGE, (595.0, 841.0)])
@@ -72,6 +75,7 @@ def test_convert_file_to_images_honours_render_dpi_for(tmp_path, monkeypatch):
 
 
 def test_mistral_ocr_honours_render_dpi_for(tmp_path, monkeypatch):
+    monkeypatch.setenv("RENDER_PAGE_SHORT_SIDE_PX", "0")  # isolate the budget from the per-page cap
     from core.ocr import ocr_mistral_v2
     from core.ocr.ocr_mistral_v2 import MistralOCRProcessor
 
@@ -108,6 +112,7 @@ def test_mistral_ocr_honours_render_dpi_for(tmp_path, monkeypatch):
 
 
 def test_orientation_detection_honours_render_dpi_for(tmp_path, monkeypatch):
+    monkeypatch.setenv("RENDER_PAGE_SHORT_SIDE_PX", "0")  # isolate the budget from the per-page cap
     import core.pipeline as pipeline
     from core.pipeline import Pipeline
 
@@ -142,3 +147,37 @@ def test_orientation_detection_honours_render_dpi_for(tmp_path, monkeypatch):
     with fitz.open(pdf) as doc:
         expected = doc[0].get_pixmap(dpi=_FAKE_DPI)
     assert seen == [(expected.width, expected.height)]
+
+
+def test_every_render_site_applies_the_page_cap(tmp_path, monkeypatch):
+    # The counterpart to the contract tests above: with the cap on (the
+    # default), no single-page render site may produce a page whose short side
+    # exceeds it — on the 1.6 x 2.3 m geometry that, uncapped, rendered at
+    # ~200 Mpx and was rejected downstream.
+    import core.pipeline as pipeline
+    from core import utils
+    from core.ocr.ocr_mistral_v2 import MistralOCRProcessor
+    from core.pipeline import Pipeline
+    from core.rendering import PAGE_SHORT_SIDE_PX
+
+    monkeypatch.delenv("RENDER_PAGE_SHORT_SIDE_PX", raising=False)
+    pdf = _make_pdf(tmp_path / "in.pdf", [HUGE])
+    sizes = []
+
+    sizes += [_png_dimensions(p) for p in utils.convert_file_to_images(str(pdf))]
+
+    engine = object.__new__(MistralOCRProcessor)
+    monkeypatch.setattr(engine, "_process_image", lambda path: sizes.append(_png_dimensions(path)) or "md")
+    engine._process_pdf(str(pdf))
+
+    pipe = object.__new__(Pipeline)
+    pipe.local_input_path = str(pdf)
+    pipe.work_dir = tmp_path
+    monkeypatch.setattr(
+        Pipeline, "_detect_rotation", staticmethod(lambda img: sizes.append((img.width, img.height)) or 0)
+    )
+    pipe._fix_pdf_orientation()
+
+    assert len(sizes) == 3
+    for width, height in sizes:
+        assert min(width, height) <= PAGE_SHORT_SIDE_PX

@@ -16,6 +16,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from core.llm_errors import call_with_vision_fallback, is_retryable
 from core.rendering import (
     ANALYZE_BUDGET_PX,
+    cap_page_dpi,
     concat_page_files,
     render_dpi_for,
     render_pdf_pages_to_files,
@@ -149,9 +150,9 @@ class Pipeline:
 
         with fitz.open(self.local_input_path) as doc:
             for i, page in enumerate(doc):
-                dpi = render_dpi_for(
+                dpi = cap_page_dpi(page, render_dpi_for(
                     [(page.rect.width, page.rect.height)], ORIENTATION_RENDER_DPI
-                )
+                ))
                 pix = page.get_pixmap(dpi=dpi)
                 mode = "RGB" if pix.alpha == 0 else "RGBA"
                 img = Image.frombytes(mode, [pix.width, pix.height], pix.samples)
@@ -225,11 +226,11 @@ class Pipeline:
                 for page in doc:
                     # Budget applied per page: these reach the API as separate
                     # images, so each one — not their sum — has to fit.
-                    dpi = render_dpi_for(
+                    dpi = cap_page_dpi(page, render_dpi_for(
                         [(page.rect.width, page.rect.height)],
                         ANALYZE_RENDER_DPI,
                         budget_px=ANALYZE_BUDGET_PX,
-                    )
+                    ))
                     pix = page.get_pixmap(dpi=dpi)
                     img_bytes = pix.tobytes("png")
                     del pix

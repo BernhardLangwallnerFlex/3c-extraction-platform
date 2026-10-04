@@ -7,11 +7,13 @@ dpi therefore means an unbounded memory footprint — which is how a five-page
 BPS document with roughly 1.6 x 2.3 m pages killed a 4 GiB worker three times
 in a row on 2026-08-17.
 
-Two bounds live here: choose the dpi from a pixel budget rather than fixing
-it, and never hold more than one rendered page in memory at a time.
+Three bounds live here: cap each page's short side in pixels (and never render
+above the resolution of the scan it contains), keep the whole canvas inside a
+pixel budget, and never hold more than one rendered page in memory at a time.
 """
 from __future__ import annotations
 
+import os
 from math import sqrt
 from pathlib import Path
 from typing import Sequence
@@ -37,10 +39,18 @@ _log = structlog.get_logger()
 # document's peak near 2 GB against the worker's 4 GiB limit. A higher budget
 # was tried and measured worse: 400 Mpx peaked at 86% of the limit end to
 # end, against a much lower estimate, which is why the budget is chosen from
-# measurement and not headroom arithmetic. Every document whose canvas
-# already fits therefore renders at exactly the dpi it renders at today, byte
-# for byte.
-CANVAS_BUDGET_PX = 200_000_000
+# measurement and not headroom arithmetic.
+#
+# Lowered from 200 Mpx to 150 Mpx on 2026-10-04 for a harder limit than memory:
+# the extraction model now rejects an RGB image above ~179 Mpx with 400
+# "unsupported image" (image_parse_error) — probed: 178 Mpx accepted, 185 Mpx
+# rejected, which is PIL's own decompression-bomb threshold of 178,956,970 px.
+# A 200 Mpx canvas therefore failed the job outright, and so would any
+# subdocument of roughly 46+ A4 pages at 200 dpi. 150 Mpx leaves a margin under
+# that limit; a longer subdocument renders at a lower dpi instead of failing.
+# Since the per-page cap below, this budget binds only on subdocuments with
+# many pages.
+CANVAS_BUDGET_PX = 150_000_000
 
 # Below roughly this resolution, body text on a scanned page stops being
 # legible to the vision model. A pathological input gets a small image rather
@@ -63,6 +73,37 @@ MIN_DPI = 40
 # documents touched. An earlier, narrower value (8 Mpx, justified only against
 # A4/A3) would have touched 64 of 441 files instead of 14.
 ANALYZE_BUDGET_PX = 32_000_000
+
+# A page's physical size is not to be trusted. Phone scanning apps routinely
+# write an A4 photo as a 72 or 144 dpi image, so the PDF claims a ~1.6 x 2.3 m
+# page and 200 dpi renders ~200 Mpx for an ordinary letter — 7x the pixels the
+# photo has. Mistral rejects such a page ("Image pixels are above the allowed
+# limits"), dropping the document to single-engine OCR, and since 2026-10 the
+# extraction model rejects the ~200 Mpx canvas outright (400 image_parse_error),
+# failing the job. So each page's size is capped in pixels, and a page is
+# never rendered above the resolution of a page-filling embedded image.
+#
+# The cap is on the *short* side: a tall page — a long receipt, or an image
+# upload that stacks several A4 pages into one strip — keeps its full width
+# and with it legible text, where a long-side cap would squeeze a 2550 x 16500
+# strip to 532 px wide. 2500 px is ~300 dpi across A4, so an ordinary A4 page
+# (1654 px wide at 200 dpi) is untouched, and on an A4-shaped page it gives the
+# same image as the 3500 px long-side cap that was measured.
+#
+# Measured 2026-10-04 on the largest BPS documents
+# (scripts/render_cap_experiment.py, render_cap_pipeline_ab.py): Mistral output
+# at 3500 px matched the uncapped render where that render was accepted at all,
+# 1800 px lost text on a 72 dpi source, and full-pipeline extraction at 3500 px
+# was within run-to-run noise on normal documents while turning two failed
+# documents into correct results. This pipeline reads invoice pages only;
+# genuine large-format content (plans) is out of scope here.
+#
+# RENDER_PAGE_SHORT_SIDE_PX overrides it; 0 switches the cap off.
+PAGE_SHORT_SIDE_PX = 2500
+PAGE_SHORT_SIDE_PX_ENV = "RENDER_PAGE_SHORT_SIDE_PX"
+
+# An embedded image must cover this share of the page to define its resolution.
+_NATIVE_COVER = 0.9
 
 
 def render_dpi_for(
@@ -102,6 +143,65 @@ def render_dpi_for(
     return max(MIN_DPI, int(base_dpi * sqrt(budget_px / total_px_at_base)))
 
 
+def page_short_side_px() -> int:
+    """Short-side pixel cap per rendered page; 0 means disabled."""
+    raw = os.getenv(PAGE_SHORT_SIDE_PX_ENV)
+    if raw is None or raw.strip() == "":
+        return PAGE_SHORT_SIDE_PX
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        _log.warning("render_page_short_side_px_invalid", value=raw, using=PAGE_SHORT_SIDE_PX)
+        return PAGE_SHORT_SIDE_PX
+
+
+def native_image_dpi(page) -> float | None:
+    """Effective dpi of the largest image filling most of `page`, if any."""
+    area = page.rect.width * page.rect.height
+    if area <= 0:
+        return None
+    best = None
+    for info in page.get_image_info():
+        box = fitz.Rect(info["bbox"]) & page.rect
+        if box.is_empty or box.width * box.height < _NATIVE_COVER * area:
+            continue
+        dpi = info["width"] / (box.width / 72.0)
+        best = dpi if best is None else max(best, dpi)
+    return best
+
+
+def cap_page_dpi(page, dpi: int) -> int:
+    """Lower `dpi` so `page` renders within the short-side cap and native resolution.
+
+    Returns `dpi` unchanged when the cap is disabled or already satisfied, so it
+    only ever narrows what the physical-size budget chose.
+    """
+    max_px = page_short_side_px()
+    if not max_px:
+        return dpi
+    short_side_pt = min(page.rect.width, page.rect.height)
+    if short_side_pt <= 0:
+        return dpi
+    capped = min(float(dpi), max_px / (short_side_pt / 72.0))
+    native = native_image_dpi(page)
+    if native:
+        capped = min(capped, native)
+    return max(1, int(capped))
+
+
+def _capped_page_dpis(doc, base_dpi: int, budget_px: int) -> list[int]:
+    """Per-page dpi under the short-side cap, scaled down together if the
+    resulting canvas would still exceed `budget_px`."""
+    dpis = [cap_page_dpi(page, base_dpi) for page in doc]
+    widths = [page.rect.width * d / 72.0 for page, d in zip(doc, dpis)]
+    heights = [page.rect.height * d / 72.0 for page, d in zip(doc, dpis)]
+    canvas_px = (max(widths) * sum(heights)) if dpis else 0
+    if canvas_px > budget_px:
+        factor = sqrt(budget_px / canvas_px)
+        dpis = [max(1, int(d * factor)) for d in dpis]
+    return dpis
+
+
 def render_pdf_pages_to_files(
     pdf_path,
     out_dir,
@@ -122,6 +222,17 @@ def render_pdf_pages_to_files(
     rendered: list[tuple[Path, int, int]] = []
 
     with fitz.open(pdf_path) as doc:
+        if page_short_side_px():
+            # Per page: one dpi for the whole file would let a fake 2 m page
+            # drag an A4 page next to it down to an unreadable resolution.
+            for index, (page, dpi) in enumerate(zip(doc, _capped_page_dpis(doc, base_dpi, budget_px))):
+                pix = page.get_pixmap(dpi=dpi)
+                page_path = out_dir / f"{prefix}_{index:04d}.png"
+                pix.save(str(page_path))
+                rendered.append((page_path, pix.width, pix.height))
+                del pix
+            return rendered
+
         dpi = render_dpi_for(
             [(page.rect.width, page.rect.height) for page in doc], base_dpi, budget_px
         )

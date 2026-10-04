@@ -100,16 +100,15 @@ def test_oversized_document_renders_within_the_budget(tmp_path):
     assert width * height <= CANVAS_BUDGET_PX
 
 
-def test_single_page_filling_the_budget_concatenates_without_raising(tmp_path):
-    # Finding 1: concat_page_files reopens the per-page PNGs it just wrote,
-    # and a single large-format page can land within CANVAS_BUDGET_PX while
-    # still exceeding PIL's own decompression-bomb threshold (~179 Mpx) — this
-    # HUGE_A-sized page renders to ~229 Mpx at 200 dpi, which exceeds the 200
-    # Mpx CANVAS_BUDGET_PX, so it downscales to ~198 Mpx — still comfortably
-    # above PIL's decompression-bomb threshold. Without the guard lifted
-    # inside concat_page_files this raised DecompressionBombError: an
-    # exception crash traded for the OOM crash this task fixes. Exactly a
-    # one-page subdocument of the failing document.
+def test_large_format_page_is_capped_far_below_the_model_limit(tmp_path, monkeypatch):
+    # The 1.6 x 2.3 m page from the 2026-08-17 crash document. Uncapped it
+    # rendered to ~198 Mpx — inside the old 200 Mpx budget, but above the
+    # ~179 Mpx RGB limit at which the extraction model now rejects an image
+    # (400 image_parse_error), failing the whole job. The per-page cap bounds
+    # its short side instead.
+    from core.rendering import PAGE_SHORT_SIDE_PX
+
+    monkeypatch.delenv("RENDER_PAGE_SHORT_SIDE_PX", raising=False)
     pdf = _make_pdf(tmp_path / "in.pdf", [(4554.0, 6516.0)])
     pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1]}, 1)
 
@@ -119,10 +118,34 @@ def test_single_page_filling_the_budget_concatenates_without_raising(tmp_path):
     out = tmp_path / "written.png"
     out.write_bytes(pipe.storage.blobs[img_key])
     width, height = _png_dimensions(out)
-    # Both bounds matter: within our budget, but still above PIL's own ~179
-    # Mpx decompression-bomb threshold — otherwise this could pass vacuously
-    # without ever exercising the guard it exists to regression-test.
-    assert 178_956_970 < width * height <= CANVAS_BUDGET_PX
+    assert min(width, height) <= PAGE_SHORT_SIDE_PX
+    assert width * height < 10_000_000
+
+
+def test_cap_is_per_page_so_a_fake_large_page_cannot_shrink_its_a4_neighbour(tmp_path, monkeypatch):
+    # One dpi for the whole file would have to satisfy the large page, and
+    # would drag the A4 page next to it down to ~40 dpi. Each page gets its own.
+    monkeypatch.delenv("RENDER_PAGE_SHORT_SIDE_PX", raising=False)
+    pdf = _make_pdf(tmp_path / "in.pdf", [(595.0, 841.0), (4554.0, 6516.0)])
+    pipe = _make_pipeline(pdf, tmp_path, {"R-1": [1, 2]}, 2)
+
+    pipe.split_document_into_invoices()
+
+    out = tmp_path / "written.png"
+    out.write_bytes(pipe.storage.blobs[pipe.subdocuments[0].image_key])
+    width, _height = _png_dimensions(out)
+    with fitz.open(pdf) as doc:
+        a4_width_at_200 = doc[0].get_pixmap(dpi=200).width
+    # Canvas is as wide as its widest page; the A4 page kept its 200 dpi width,
+    # and the capped large page is no wider than the cap.
+    assert a4_width_at_200 <= width <= 2500
+
+
+def test_canvas_budget_stays_below_the_extraction_model_limit():
+    # Probed 2026-10-04: an RGB image of 178 Mpx is accepted, 185 Mpx is
+    # rejected — PIL's decompression-bomb threshold. A budget at or above it
+    # turns a long subdocument into a failed job.
+    assert CANVAS_BUDGET_PX < 178_956_970
 
 
 def test_per_page_temp_files_do_not_survive(tmp_path):
@@ -136,6 +159,7 @@ def test_per_page_temp_files_do_not_survive(tmp_path):
 
 
 def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("RENDER_PAGE_SHORT_SIDE_PX", "0")  # isolate the budget from the per-page cap
     # Per-image budget: analyze sends pages as separate images, so each one is
     # what has to fit, not their sum. Unlike the subdocument render, analyze
     # pages are checked against ANALYZE_BUDGET_PX (32 Mpx), not CANVAS_BUDGET_PX
@@ -191,6 +215,7 @@ def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
 def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
     tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("RENDER_PAGE_SHORT_SIDE_PX", "0")  # isolate the budget from the per-page cap
     # The downscale path, end to end, without ever rendering a genuinely
     # oversized page (that would mean a real ~1.2 GB allocation inside a
     # test whose subject is bounding memory). A spy on render_dpi_for proves
@@ -297,6 +322,7 @@ def test_analyze_ordinary_pages_are_a_no_op_under_the_analyze_budget(tmp_path, m
 
 
 def test_analyze_pathological_page_is_capped_to_the_analyze_budget(tmp_path, monkeypatch):
+    monkeypatch.setenv("RENDER_PAGE_SHORT_SIDE_PX", "0")  # isolate the budget from the per-page cap
     # The pathological geometry: a 4554 x 6516 pt page (the real BPS crash
     # page, 1.6 x 2.3 m) is 128.8 Mpx at ANALYZE_RENDER_DPI (150) —
     # comfortably under CANVAS_BUDGET_PX (200 Mpx) but 4x the 32 Mpx analyze

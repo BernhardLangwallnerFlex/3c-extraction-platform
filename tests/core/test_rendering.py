@@ -237,7 +237,7 @@ def test_concat_rejects_an_empty_page_list(tmp_path):
         concat_page_files([], tmp_path / "out.png")
 
 
-def test_concat_does_not_raise_reopening_a_page_that_fills_the_budget(tmp_path):
+def test_concat_does_not_raise_reopening_a_page_that_fills_the_budget(tmp_path, monkeypatch):
     # concat_page_files reopens the per-page PNGs it just wrote. HUGE_A alone
     # renders to ~229 Mpx at 200 dpi, which exceeds the 200 Mpx CANVAS_BUDGET_PX,
     # so it downscales to ~198 Mpx — but still well above PIL's own decompression-
@@ -245,8 +245,13 @@ def test_concat_does_not_raise_reopening_a_page_that_fills_the_budget(tmp_path):
     # bomb threshold for the duration of that reopen. Without it, this raised
     # DecompressionBombError: an exception crash traded for the OOM crash this
     # task fixes. Exactly a one-page subdocument of the document that caused it.
+    # The production budget now sits below PIL's threshold, but MIN_DPI may
+    # still exceed it on a pathological page, so the guard must keep working:
+    # exercise it with the cap off and a budget that lands above the threshold.
+    monkeypatch.setenv("RENDER_PAGE_SHORT_SIDE_PX", "0")
+    budget = 200_000_000
     pdf = _make_pdf(tmp_path / "in.pdf", [HUGE_A])
-    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200)
+    rendered = render_pdf_pages_to_files(pdf, tmp_path, base_dpi=200, budget_px=budget)
 
     out = concat_page_files(rendered, tmp_path / "out.png")
 
@@ -255,4 +260,4 @@ def test_concat_does_not_raise_reopening_a_page_that_fills_the_budget(tmp_path):
     # Both bounds matter: within our budget, but still above PIL's own ~179
     # Mpx decompression-bomb threshold — otherwise this could pass vacuously
     # without ever exercising the guard it exists to regression-test.
-    assert 178_956_970 < width * height <= CANVAS_BUDGET_PX
+    assert 178_956_970 < width * height <= budget

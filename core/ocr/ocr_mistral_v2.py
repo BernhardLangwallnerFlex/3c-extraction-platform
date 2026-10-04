@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Union
 from mistralai import Mistral
 from tenacity import retry, stop_after_attempt, wait_exponential
-from core.rendering import render_dpi_for
+from core.rendering import cap_page_dpi, render_dpi_for
 from core.utils import encode_image_to_base64, log_retry
 
 
@@ -53,7 +53,7 @@ class MistralOCRProcessor:
                 page = doc[page_num]
                 # One page at a time, but a large-format page at a fixed 200 dpi
                 # is still hundreds of megabytes.
-                dpi = render_dpi_for([(page.rect.width, page.rect.height)], 200)
+                dpi = cap_page_dpi(page, render_dpi_for([(page.rect.width, page.rect.height)], 200))
                 pix = page.get_pixmap(dpi=dpi)
                 tmp_img = tempfile.mktemp(suffix=".png")
                 pix.save(tmp_img)

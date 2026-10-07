@@ -136,3 +136,13 @@ def test_telemetry_reports_images_and_low_text_pages(tmp_path, monkeypatch):
         pipe.analyze_document()
     (call,) = [e for e in logs if e["event"] == "analyze_llm_call"]
     assert call["images_sent"] == 1 and call["pages_low_text"] == 2
+
+
+def test_switch_on_without_low_text_pages_is_unchanged(tmp_path, monkeypatch):
+    # Labels only earn their place once an image is skipped; on a document with
+    # no photo pages the experiment showed they only perturbed the grouping.
+    pipe, client = _pipe(tmp_path, monkeypatch, {1: TEXT, 2: TEXT}, threshold=150)
+    pipe.analyze_document()
+    (blocks,) = client.blocks_seen
+    assert _texts(blocks) == [f"PROMPT<{pipe.markdown_with_pages_numbers}>"]
+    assert len(_images(blocks)) == 2

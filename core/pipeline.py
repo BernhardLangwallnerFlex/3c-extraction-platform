@@ -280,7 +280,10 @@ class Pipeline:
                     del pix
                     page_images.append((page_number, base64.b64encode(img_bytes).decode("utf-8")))
 
-        content_blocks = build_analyze_blocks(prompt, page_images, label_images=threshold is not None)
+        # Labels only once an image is skipped: position then no longer says
+        # which page an image is. Without a skip the request stays as it was
+        # (the 2026-10-07 experiment: labels alone perturbed the grouping).
+        content_blocks = build_analyze_blocks(prompt, page_images, label_images=bool(low_text))
 
         client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_KEY"),

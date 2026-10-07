@@ -136,4 +136,4 @@ First run showed a second difference (BPS_7) caused by the `Seite N:` labels alo
 
 Runtime 56–79 s per large document.
 
-**Decision:** pending (Bernhard).
+**Decision: GO** (Bernhard, 2026-10-07) — threshold 200 for BPS and Sanierer.

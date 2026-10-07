@@ -13,6 +13,12 @@ import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from core.analyze_content import (
+    build_analyze_blocks,
+    build_pages_markdown,
+    low_text_page_chars,
+    select_image_pages,
+)
 from core.llm_errors import call_with_vision_fallback, is_retryable
 from core.rendering import (
     ANALYZE_BUDGET_PX,
@@ -232,21 +238,36 @@ class Pipeline:
         )
 
     def analyze_document(self):
+        # getattr: several tests build product_config as a bare SimpleNamespace.
+        threshold = getattr(self.product_config, "analyze_low_text_threshold", None)
+        low_text = low_text_page_chars(self.markdown_by_page, threshold)
+        # Only rebuilt when a page is marked, so the switch-off prompt is the
+        # exact string extract_markdown produced.
+        pages_markdown = (
+            build_pages_markdown(self.markdown_by_page, low_text)
+            if low_text else self.markdown_with_pages_numbers
+        )
+
         if self.product_config.analyze_prompt_builder is not None:
-            prompt = self.product_config.analyze_prompt_builder(
-                markdown_text=self.markdown_with_pages_numbers,
-            )
+            prompt = self.product_config.analyze_prompt_builder(markdown_text=pages_markdown)
         else:
-            prompt = build_prompt_for_analyze_document(
-                markdown_text=self.markdown_with_pages_numbers,
-            )
+            prompt = build_prompt_for_analyze_document(markdown_text=pages_markdown)
 
-        # Build multimodal content: text prompt + one low-res image per page
-        content_blocks = [{"type": "text", "text": prompt}]
-
+        # One low-res image per page that is not low-text, at most 50 in all.
+        page_images: list[tuple[int, str]] = []
         if self.file_type == "pdf":
             with fitz.open(self.local_input_path) as doc:
-                for page in doc:
+                all_pages = range(1, len(doc) + 1)
+                image_pages, capped = select_image_pages(all_pages, low_text)
+                if capped:
+                    _telemetry.warning(
+                        "analyze_images_capped",
+                        reason="more than 50 page images — analyzing from OCR text only",
+                        pages=len(doc),
+                        images_planned=len(doc) - len(low_text),
+                    )
+                for page_number in image_pages:
+                    page = doc[page_number - 1]
                     # Budget applied per page: these reach the API as separate
                     # images, so each one — not their sum — has to fit.
                     dpi = cap_page_dpi(page, render_dpi_for(
@@ -257,14 +278,9 @@ class Pipeline:
                     pix = page.get_pixmap(dpi=dpi)
                     img_bytes = pix.tobytes("png")
                     del pix
-                    b64 = base64.b64encode(img_bytes).decode("utf-8")
-                    content_blocks.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{b64}",
-                            "detail": "low",
-                        },
-                    })
+                    page_images.append((page_number, base64.b64encode(img_bytes).decode("utf-8")))
+
+        content_blocks = build_analyze_blocks(prompt, page_images, label_images=threshold is not None)
 
         client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_KEY"),
@@ -288,6 +304,8 @@ class Pipeline:
                 model=analyze_model,
                 prompt_tokens=_usage.prompt_tokens,
                 completion_tokens=_usage.completion_tokens,
+                images_sent=len(page_images),
+                pages_low_text=len(low_text),
             )
         self.analysis_dict = extract_json_from_response(response.choices[0].message.content)
 

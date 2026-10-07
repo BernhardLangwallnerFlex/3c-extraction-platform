@@ -23,6 +23,11 @@ class ProductConfig:
     analyze_prompt_builder: Callable[..., str] | None = None
     analyze_output_schema: dict | None = None
 
+    # Pages whose OCR text is shorter than this (chars, larger engine) are sent
+    # to analyze without their image and marked as "probably a photo".
+    # None = every page keeps its image (VCC). See core/analyze_content.py.
+    analyze_low_text_threshold: int | None = None
+
     # Optional product-specific transform applied to each subdocument's
     # extraction dict after the LLM call. None = no-op.
     postprocess_extraction: Callable[[dict], dict] | None = None

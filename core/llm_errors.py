@@ -65,8 +65,10 @@ def strip_image_blocks(blocks: list) -> list:
             if not (isinstance(b, dict) and b.get("type") == "image_url")]
 
 
-def call_with_vision_fallback(call_fn, client, model, blocks):
+def call_with_vision_fallback(call_fn, client, model, blocks, strip=strip_image_blocks):
     """Call `call_fn(client, model, blocks)`; drop images on a content-policy 400.
+
+    `strip` builds the text-only request (default: drop the image blocks).
 
     Returns `(response, vision_dropped)`. Raises if the text-only attempt also
     fails, or if there were no images to drop in the first place.
@@ -79,8 +81,8 @@ def call_with_vision_fallback(call_fn, client, model, blocks):
     except Exception as exc:
         if not is_content_policy_rejection(exc):
             raise
-        text_only = strip_image_blocks(blocks)
-        dropped = len(blocks) - len(text_only)
+        text_only = strip(blocks)
+        dropped = sum(1 for b in blocks if isinstance(b, dict) and b.get("type") == "image_url")
         if dropped == 0:
             # Nothing to strip: the retry would be byte-identical.
             raise

@@ -110,3 +110,15 @@ def test_blocks_labelled_put_page_label_before_each_image():
 
 def test_blocks_without_images_are_prompt_only():
     assert build_analyze_blocks("P", [], label_images=True) == [{"type": "text", "text": "P"}]
+
+
+def test_strip_removes_images_and_their_labels_but_keeps_the_prompt():
+    from core.analyze_content import strip_images_and_labels
+    blocks = build_analyze_blocks("P", [(1, "A"), (3, "B")], label_images=True)
+    assert strip_images_and_labels(blocks) == [{"type": "text", "text": "P"}]
+
+
+def test_strip_keeps_a_prompt_that_happens_to_look_like_a_label():
+    from core.analyze_content import strip_images_and_labels
+    blocks = build_analyze_blocks("Seite 1:", [(1, "A")], label_images=False)
+    assert strip_images_and_labels(blocks) == [{"type": "text", "text": "Seite 1:"}]

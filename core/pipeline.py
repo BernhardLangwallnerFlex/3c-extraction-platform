@@ -18,6 +18,7 @@ from core.analyze_content import (
     build_pages_markdown,
     low_text_page_chars,
     select_image_pages,
+    strip_images_and_labels,
 )
 from core.llm_errors import call_with_vision_fallback, is_retryable
 from core.rendering import (
@@ -45,6 +46,10 @@ _ANALYZE_VISION_WARNING = (
     "Die Aufteilung des Dokuments erfolgte ohne Bildanalyse, da der Inhaltsfilter des "
     "KI-Dienstes mindestens eine Seite abgelehnt hat. Die Zuordnung von Seiten zu Belegen "
     "kann ungenauer sein."
+)
+_ANALYZE_CAP_WARNING = (
+    "Die Aufteilung des Dokuments erfolgte ohne Bildanalyse, da das Dokument zu viele Seiten "
+    "für die Bildanalyse enthält. Die Zuordnung von Seiten zu Belegen kann ungenauer sein."
 )
 _EXTRACT_VISION_WARNING = (
     "Die Extraktion dieses Belegs erfolgte nur anhand des OCR-Textes, da der Inhaltsfilter "
@@ -95,6 +100,9 @@ class Pipeline:
     # Set per instance by analyze_document(). Class-level default because
     # several tests build Pipeline via object.__new__ and never analyze.
     analyze_vision_dropped: bool = False
+    # Set by analyze_document() when more than 50 page images forced a
+    # text-only analyze. Reported to the consumer like analyze_vision_dropped.
+    analyze_images_capped: bool = False
 
     def __init__(
         self,
@@ -255,10 +263,12 @@ class Pipeline:
 
         # One low-res image per page that is not low-text, at most 50 in all.
         page_images: list[tuple[int, str]] = []
+        self.analyze_images_capped = False
         if self.file_type == "pdf":
             with fitz.open(self.local_input_path) as doc:
                 all_pages = range(1, len(doc) + 1)
                 image_pages, capped = select_image_pages(all_pages, low_text)
+                self.analyze_images_capped = capped
                 if capped:
                     _telemetry.warning(
                         "analyze_images_capped",
@@ -293,6 +303,7 @@ class Pipeline:
         analyze_model = os.getenv("OPENAI_VISION_MODEL", "gpt-5.4")
         response, self.analyze_vision_dropped = call_with_vision_fallback(
             _call_analyze_llm, client, analyze_model, content_blocks,
+            strip=strip_images_and_labels,
         )
         if self.analyze_vision_dropped:
             _telemetry.warning(
@@ -500,11 +511,12 @@ class Pipeline:
         # threads sharing one processor. Pop it: it is internal.
         extraction_dropped = bool(result.pop("_vision_dropped", False))
         analyze_dropped = bool(getattr(self, "analyze_vision_dropped", False))
+        images_capped = bool(getattr(self, "analyze_images_capped", False))
         ocr_degraded = bool(getattr(getattr(self, "ocr_engine", None),
                                     "single_engine_fallback", False))
 
         flags = []
-        if analyze_dropped or extraction_dropped:
+        if analyze_dropped or extraction_dropped or images_capped:
             flags.append("VISION_DROPPED")
         if ocr_degraded:
             flags.append("SINGLE_ENGINE_OCR")
@@ -514,6 +526,8 @@ class Pipeline:
             warnings = []
         if analyze_dropped:
             warnings.append(_ANALYZE_VISION_WARNING)
+        if images_capped:
+            warnings.append(_ANALYZE_CAP_WARNING)
         if extraction_dropped:
             warnings.append(_EXTRACT_VISION_WARNING)
         result["warnings"] = warnings

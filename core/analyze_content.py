@@ -27,6 +27,8 @@ _SOURCE_HEADER = re.compile(r"^--- OCR Source [^\n]*---$", re.MULTILINE)
 # Mistral writes a placeholder like ![img-0.jpeg](img-0.jpeg) for each photo.
 _MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _WHITESPACE = re.compile(r"\s+")
+# The page label build_analyze_blocks puts before an image.
+_IMAGE_LABEL = re.compile(r"^Seite \d+:$")
 
 
 def count_ocr_chars(page_markdown: str) -> int:
@@ -94,3 +96,20 @@ def build_analyze_blocks(prompt: str, page_images: list[tuple[int, str]], label_
             "image_url": {"url": f"data:image/png;base64,{b64}", "detail": "low"},
         })
     return blocks
+
+
+def strip_images_and_labels(blocks: list) -> list:
+    """The text-only form of an analyze request: images and their page labels removed.
+
+    Used by the content-policy fallback. A label without its image announces a
+    picture that never arrives, so it goes too. The first block is the prompt
+    and is always kept, whatever it says.
+    """
+    if not blocks:
+        return []
+    rest = [
+        b for b in blocks[1:]
+        if b.get("type") != "image_url"
+        and not (b.get("type") == "text" and _IMAGE_LABEL.match(b.get("text", "")))
+    ]
+    return [blocks[0], *rest]

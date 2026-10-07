@@ -146,3 +146,52 @@ def test_switch_on_without_low_text_pages_is_unchanged(tmp_path, monkeypatch):
     (blocks,) = client.blocks_seen
     assert _texts(blocks) == [f"PROMPT<{pipe.markdown_with_pages_numbers}>"]
     assert len(_images(blocks)) == 2
+
+
+class _RejectImagesClient(_CaptureClient):
+    """Content-filter 400 on any request with an image; accepts text-only."""
+
+    def __init__(self):
+        super().__init__()
+        outer = self
+        inner_create = self.chat.completions.create
+
+        class _Err(Exception):
+            status_code = 400
+            body = {"error": {"code": "content_policy_violation", "message": "content safety"}}
+
+        class _Completions:
+            def create(self, **kwargs):
+                blocks = kwargs["messages"][0]["content"]
+                if any(b["type"] == "image_url" for b in blocks):
+                    outer.blocks_seen.append(blocks)
+                    raise _Err("content safety")
+                return inner_create(**kwargs)
+
+        class _Chat:
+            completions = _Completions()
+
+        self.chat = _Chat()
+
+
+def test_content_filter_fallback_drops_labels_with_the_images(tmp_path, monkeypatch):
+    pipe, _ = _pipe(tmp_path, monkeypatch, {1: TEXT, 2: PHOTO, 3: TEXT}, threshold=150)
+    client = _RejectImagesClient()
+    monkeypatch.setattr("core.pipeline.AzureOpenAI", lambda **kwargs: client)
+    pipe.analyze_document()
+    first, retry = client.blocks_seen
+    assert "Seite 1:" in _texts(first)
+    assert len(retry) == 1 and retry[0]["type"] == "text"
+    assert pipe.analyze_vision_dropped is True
+
+
+def test_cap_marks_the_pipeline(tmp_path, monkeypatch):
+    pipe, _ = _pipe(tmp_path, monkeypatch, {p: TEXT for p in range(1, 52)}, threshold=None)
+    pipe.analyze_document()
+    assert pipe.analyze_images_capped is True
+
+
+def test_no_cap_leaves_the_pipeline_unmarked(tmp_path, monkeypatch):
+    pipe, _ = _pipe(tmp_path, monkeypatch, {1: TEXT}, threshold=None)
+    pipe.analyze_document()
+    assert pipe.analyze_images_capped is False

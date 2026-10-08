@@ -23,4 +23,7 @@ CONFIG = ProductConfig(
     extract_output_schema=_EXTRACT_SCHEMA,
     analyze_prompt_builder=build_analyze_prompt,
     analyze_output_schema=ANALYZE_OUTPUT_SCHEMA,
+    # Photo pages go to analyze without their image (spec 2026-10-06;
+    # 200 calibrated on the BPS/Sanierer corpora, see the spec's Results).
+    analyze_low_text_threshold=200,
 )

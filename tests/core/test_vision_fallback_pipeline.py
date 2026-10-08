@@ -329,3 +329,20 @@ def test_dual_ocr_leaves_the_flag_false_when_both_engines_work(monkeypatch):
     dual.extract_text(invoice=None)
 
     assert dual.single_engine_fallback is False
+
+
+CAP_WARNING_FRAGMENT = "zu viele Seiten für die Bildanalyse"
+
+
+def test_image_cap_flags_and_warns_without_blaming_the_content_filter():
+    pipe = _pipeline()
+    pipe.analyze_images_capped = True
+    result = pipe._extract_single_subdocument(_SUBDOC, _FixedProcessor({"number": "R-1"}))
+
+    assert result["qualityFlags"] == ["VISION_DROPPED"]
+    assert any(CAP_WARNING_FRAGMENT in w for w in result["warnings"])
+    assert not any("Inhaltsfilter" in w for w in result["warnings"])
+
+
+def test_pipeline_defaults_analyze_images_capped_to_false():
+    assert object.__new__(Pipeline).analyze_images_capped is False

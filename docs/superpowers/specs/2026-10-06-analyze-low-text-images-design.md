@@ -107,3 +107,40 @@ Estimated cost: ~€6 OCR + ~€3 LLM.
 - **Photo-page assignment changes** — the model no longer sees photos it might have attached to a Beleg. Measured in step 3; changed assignments are reviewed.
 - **Misclassified pages** (a real page with little or badly OCR'd text) — still in the prompt as text with the marker, only the image is missing. Calibration list in step 2 covers this.
 - **Text-only analyze on very long documents** loses visual boundary cues; only used where the request would otherwise fail outright.
+
+## Results (2026-10-07)
+
+**Threshold: 200** (not 150). Calibration over 549 pages (7 BPS, 6 large BPS, 7 Sanierer): pages under 150 chars are photos, letter sign-offs and letterhead footers; 150–200 adds DEKRA "Fotoanlage" photo pages (≈196 chars of header text) and scale/ruler pages. Pages from 200 up are real documents (emails, letters, invoice line items). The one real page under 200 (a 153-char "Dummy-Dokument" note) keeps its text with the marker.
+
+**Finding: the large documents are text-dense, not photo albums.** Text pages at T=200: 44 / 42 / 44 / 50 / 110 / 114. The 114- and 121-page documents go text-only via the 50-image cap; the other four fit under the limit with images.
+
+**A/B on normal-size documents** (analyze only, 3 runs each, identical cached OCR):
+
+| | Docs | Text grouping = A | Notes |
+|---|---|---|---|
+| BPS | 7 | 7/7 | BPS_3 (22 of 26 pages photos): same grouping, photo pages placed identically, analyze tokens −40% (10.4K → 6.2K). BPS_6: −7%. |
+| Sanierer | 7 | 6/7 | No Sanierer test document has a low-text page. The one difference (5926210150, 19 pages) persists with a **byte-identical** request (same tokens as A) — model run-to-run variance, not this change. |
+
+First run showed a second difference (BPS_7) caused by the `Seite N:` labels alone on a document with no skipped page. **Design change:** labels are now added only when at least one image is skipped, so documents without photo pages send exactly today's request (commit b5ddcf3).
+
+**Large documents** (B, full pipeline): **6/6 complete** (today: 0/6), all subdocuments returncode 100.
+
+| Document | Pages | Images sent | Belege | Spot check |
+|---|---|---|---|---|
+| …25552222600 | 54 | 44 | 2 | – |
+| …25552283100 | 58 | 42 | 4 | duplicate copies of one invoice merged into one Beleg (24 items) |
+| …26551211500 | 53 | 44 | 6 | – |
+| …26551468300 | 114 | 0 (cap) | 2 | all invoice-like pages assigned |
+| …26551820200 | 121 | 0 (cap) | 1 | cost estimate p26–27 found; no other invoice-like pages |
+| …26K40159C05 | 52 | 50 | 1 | DEKRA invoice (two copies) merged; unassigned invoice-like pages are lawyer letters |
+
+Runtime 56–79 s per large document.
+
+**Decision: GO** (Bernhard, 2026-10-07) — threshold 200 for BPS and Sanierer.
+
+### Follow-ups after the final review (2026-10-08)
+
+- **Azure markup no longer counts as text.** `<figure>` tags and `<!-- PageFooter/PageNumber/PageBreak -->` comments are stripped before counting. Checked offline on the cached corpus: only 10 DEKRA "Fotoanlage" photo pages move below 200, no text page does; threshold 200 stands. The 52-page DEKRA document now sends 40 images instead of 50, with an identical split.
+- **A capped analyze is reported** as `VISION_DROPPED` with its own warning; the content-policy fallback drops the `Seite N:` labels with the images.
+- **Analyze prompts unchanged on purpose.** The BPS/Sanierer prompts still say "ein Bild pro Seite". Adding a sentence would change the request for every document, including those with no photo pages, which the experiment showed is enough to perturb the grouping. The low-text marker already says "Bild nicht mitgesendet".
+- **Next limit to watch:** the 121-page document sends ≈229K prompt tokens text-only. A larger bundle could exceed the model's context window and fail after OCR, the same pattern this change removes. Not addressed here.

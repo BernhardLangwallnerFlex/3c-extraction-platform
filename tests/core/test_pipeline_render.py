@@ -185,7 +185,7 @@ def test_analyze_renders_each_page_within_the_budget(tmp_path, monkeypatch):
 
     captured = {}
 
-    def _fake_call(call_fn, client, model, blocks):
+    def _fake_call(call_fn, client, model, blocks, **kwargs):
         captured["blocks"] = blocks
         raise RuntimeError("stop after building the blocks")
 
@@ -251,7 +251,7 @@ def test_analyze_consults_render_dpi_for_once_per_page_and_uses_its_answer(
 
     captured = {}
 
-    def _fake_call(call_fn, client, model, blocks):
+    def _fake_call(call_fn, client, model, blocks, **kwargs):
         captured["blocks"] = blocks
         raise RuntimeError("stop after building the blocks")
 
@@ -298,7 +298,7 @@ def test_analyze_ordinary_pages_are_a_no_op_under_the_analyze_budget(tmp_path, m
 
     captured = {}
 
-    def _fake_call(call_fn, client, model, blocks):
+    def _fake_call(call_fn, client, model, blocks, **kwargs):
         captured["blocks"] = blocks
         raise RuntimeError("stop after building the blocks")
 
@@ -347,7 +347,7 @@ def test_analyze_pathological_page_is_capped_to_the_analyze_budget(tmp_path, mon
 
     captured = {}
 
-    def _fake_call(call_fn, client, model, blocks):
+    def _fake_call(call_fn, client, model, blocks, **kwargs):
         captured["blocks"] = blocks
         raise RuntimeError("stop after building the blocks")
 

@@ -13,6 +13,13 @@ import pytesseract
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
+from core.analyze_content import (
+    build_analyze_blocks,
+    build_pages_markdown,
+    low_text_page_chars,
+    select_image_pages,
+    strip_images_and_labels,
+)
 from core.llm_errors import call_with_vision_fallback, is_retryable
 from core.rendering import (
     ANALYZE_BUDGET_PX,
@@ -39,6 +46,10 @@ _ANALYZE_VISION_WARNING = (
     "Die Aufteilung des Dokuments erfolgte ohne Bildanalyse, da der Inhaltsfilter des "
     "KI-Dienstes mindestens eine Seite abgelehnt hat. Die Zuordnung von Seiten zu Belegen "
     "kann ungenauer sein."
+)
+_ANALYZE_CAP_WARNING = (
+    "Die Aufteilung des Dokuments erfolgte ohne Bildanalyse, da das Dokument zu viele Seiten "
+    "für die Bildanalyse enthält. Die Zuordnung von Seiten zu Belegen kann ungenauer sein."
 )
 _EXTRACT_VISION_WARNING = (
     "Die Extraktion dieses Belegs erfolgte nur anhand des OCR-Textes, da der Inhaltsfilter "
@@ -89,6 +100,9 @@ class Pipeline:
     # Set per instance by analyze_document(). Class-level default because
     # several tests build Pipeline via object.__new__ and never analyze.
     analyze_vision_dropped: bool = False
+    # Set by analyze_document() when more than 50 page images forced a
+    # text-only analyze. Reported to the consumer like analyze_vision_dropped.
+    analyze_images_capped: bool = False
 
     def __init__(
         self,
@@ -232,21 +246,38 @@ class Pipeline:
         )
 
     def analyze_document(self):
+        # getattr: several tests build product_config as a bare SimpleNamespace.
+        threshold = getattr(self.product_config, "analyze_low_text_threshold", None)
+        low_text = low_text_page_chars(self.markdown_by_page, threshold)
+        # Only rebuilt when a page is marked, so the switch-off prompt is the
+        # exact string extract_markdown produced.
+        pages_markdown = (
+            build_pages_markdown(self.markdown_by_page, low_text)
+            if low_text else self.markdown_with_pages_numbers
+        )
+
         if self.product_config.analyze_prompt_builder is not None:
-            prompt = self.product_config.analyze_prompt_builder(
-                markdown_text=self.markdown_with_pages_numbers,
-            )
+            prompt = self.product_config.analyze_prompt_builder(markdown_text=pages_markdown)
         else:
-            prompt = build_prompt_for_analyze_document(
-                markdown_text=self.markdown_with_pages_numbers,
-            )
+            prompt = build_prompt_for_analyze_document(markdown_text=pages_markdown)
 
-        # Build multimodal content: text prompt + one low-res image per page
-        content_blocks = [{"type": "text", "text": prompt}]
-
+        # One low-res image per page that is not low-text, at most 50 in all.
+        page_images: list[tuple[int, str]] = []
+        self.analyze_images_capped = False
         if self.file_type == "pdf":
             with fitz.open(self.local_input_path) as doc:
-                for page in doc:
+                all_pages = range(1, len(doc) + 1)
+                image_pages, capped = select_image_pages(all_pages, low_text)
+                self.analyze_images_capped = capped
+                if capped:
+                    _telemetry.warning(
+                        "analyze_images_capped",
+                        reason="more than 50 page images — analyzing from OCR text only",
+                        pages=len(doc),
+                        images_planned=sum(1 for p in all_pages if p not in low_text),
+                    )
+                for page_number in image_pages:
+                    page = doc[page_number - 1]
                     # Budget applied per page: these reach the API as separate
                     # images, so each one — not their sum — has to fit.
                     dpi = cap_page_dpi(page, render_dpi_for(
@@ -257,14 +288,12 @@ class Pipeline:
                     pix = page.get_pixmap(dpi=dpi)
                     img_bytes = pix.tobytes("png")
                     del pix
-                    b64 = base64.b64encode(img_bytes).decode("utf-8")
-                    content_blocks.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{b64}",
-                            "detail": "low",
-                        },
-                    })
+                    page_images.append((page_number, base64.b64encode(img_bytes).decode("utf-8")))
+
+        # Labels only once an image is skipped: position then no longer says
+        # which page an image is. Without a skip the request stays as it was
+        # (the 2026-10-07 experiment: labels alone perturbed the grouping).
+        content_blocks = build_analyze_blocks(prompt, page_images, label_images=bool(low_text))
 
         client = AzureOpenAI(
             api_key=os.getenv("AZURE_OPENAI_KEY"),
@@ -274,6 +303,7 @@ class Pipeline:
         analyze_model = os.getenv("OPENAI_VISION_MODEL", "gpt-5.4")
         response, self.analyze_vision_dropped = call_with_vision_fallback(
             _call_analyze_llm, client, analyze_model, content_blocks,
+            strip=strip_images_and_labels,
         )
         if self.analyze_vision_dropped:
             _telemetry.warning(
@@ -288,6 +318,8 @@ class Pipeline:
                 model=analyze_model,
                 prompt_tokens=_usage.prompt_tokens,
                 completion_tokens=_usage.completion_tokens,
+                images_sent=len(page_images),
+                pages_low_text=len(low_text),
             )
         self.analysis_dict = extract_json_from_response(response.choices[0].message.content)
 
@@ -479,11 +511,12 @@ class Pipeline:
         # threads sharing one processor. Pop it: it is internal.
         extraction_dropped = bool(result.pop("_vision_dropped", False))
         analyze_dropped = bool(getattr(self, "analyze_vision_dropped", False))
+        images_capped = bool(getattr(self, "analyze_images_capped", False))
         ocr_degraded = bool(getattr(getattr(self, "ocr_engine", None),
                                     "single_engine_fallback", False))
 
         flags = []
-        if analyze_dropped or extraction_dropped:
+        if analyze_dropped or extraction_dropped or images_capped:
             flags.append("VISION_DROPPED")
         if ocr_degraded:
             flags.append("SINGLE_ENGINE_OCR")
@@ -493,6 +526,8 @@ class Pipeline:
             warnings = []
         if analyze_dropped:
             warnings.append(_ANALYZE_VISION_WARNING)
+        if images_capped:
+            warnings.append(_ANALYZE_CAP_WARNING)
         if extraction_dropped:
             warnings.append(_EXTRACT_VISION_WARNING)
         result["warnings"] = warnings

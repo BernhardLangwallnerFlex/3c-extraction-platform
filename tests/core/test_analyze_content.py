@@ -122,3 +122,8 @@ def test_strip_keeps_a_prompt_that_happens_to_look_like_a_label():
     from core.analyze_content import strip_images_and_labels
     blocks = build_analyze_blocks("Seite 1:", [(1, "A")], label_images=False)
     assert strip_images_and_labels(blocks) == [{"type": "text", "text": "Seite 1:"}]
+
+
+def test_count_ignores_azure_figure_tags_and_html_comments():
+    page = B + "<figure>\nKOMO\n</figure>\n<!-- PageFooter=\"Seite 2 von 9\" -->\n<!-- PageBreak -->"
+    assert count_ocr_chars(page) == len("KOMO")

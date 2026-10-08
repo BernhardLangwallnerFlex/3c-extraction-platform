@@ -274,7 +274,7 @@ class Pipeline:
                         "analyze_images_capped",
                         reason="more than 50 page images — analyzing from OCR text only",
                         pages=len(doc),
-                        images_planned=len(doc) - len(low_text),
+                        images_planned=sum(1 for p in all_pages if p not in low_text),
                     )
                 for page_number in image_pages:
                     page = doc[page_number - 1]

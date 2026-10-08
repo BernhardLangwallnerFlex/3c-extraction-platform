@@ -207,7 +207,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["calibrate", "ab", "large"])
     ap.add_argument("--product", required=True, choices=["bps", "sanierer"])
-    ap.add_argument("--threshold", type=int, default=150)
+    ap.add_argument("--threshold", type=int, default=200)  # = bps/sanierer config
     ap.add_argument("--runs", type=int, default=3)
     ap.add_argument("pdfs", nargs="+", type=Path)
     args = ap.parse_args()

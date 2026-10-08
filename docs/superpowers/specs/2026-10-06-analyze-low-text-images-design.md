@@ -137,3 +137,10 @@ First run showed a second difference (BPS_7) caused by the `Seite N:` labels alo
 Runtime 56–79 s per large document.
 
 **Decision: GO** (Bernhard, 2026-10-07) — threshold 200 for BPS and Sanierer.
+
+### Follow-ups after the final review (2026-10-08)
+
+- **Azure markup no longer counts as text.** `<figure>` tags and `<!-- PageFooter/PageNumber/PageBreak -->` comments are stripped before counting. Checked offline on the cached corpus: only 10 DEKRA "Fotoanlage" photo pages move below 200, no text page does; threshold 200 stands. The 52-page DEKRA document now sends 40 images instead of 50, with an identical split.
+- **A capped analyze is reported** as `VISION_DROPPED` with its own warning; the content-policy fallback drops the `Seite N:` labels with the images.
+- **Analyze prompts unchanged on purpose.** The BPS/Sanierer prompts still say "ein Bild pro Seite". Adding a sentence would change the request for every document, including those with no photo pages, which the experiment showed is enough to perturb the grouping. The low-text marker already says "Bild nicht mitgesendet".
+- **Next limit to watch:** the 121-page document sends ≈229K prompt tokens text-only. A larger bundle could exceed the model's context window and fail after OCR, the same pattern this change removes. Not addressed here.

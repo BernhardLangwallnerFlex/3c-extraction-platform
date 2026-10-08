@@ -26,6 +26,10 @@ LOW_TEXT_MARKER = (
 _SOURCE_HEADER = re.compile(r"^--- OCR Source [^\n]*---$", re.MULTILINE)
 # Mistral writes a placeholder like ![img-0.jpeg](img-0.jpeg) for each photo.
 _MD_IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+# Azure Document Intelligence wraps photos in <figure> tags and adds
+# <!-- PageFooter/PageNumber/PageBreak --> comments. Markup, not page text;
+# the text inside a figure (a caption, a label in the photo) still counts.
+_AZURE_MARKUP = re.compile(r"<!--.*?-->|</?fig(?:ure|caption)>", re.DOTALL)
 _WHITESPACE = re.compile(r"\s+")
 # The page label build_analyze_blocks puts before an image.
 _IMAGE_LABEL = re.compile(r"^Seite \d+:$")
@@ -38,7 +42,10 @@ def count_ocr_chars(page_markdown: str) -> int:
     on the same scale as a page both engines read.
     """
     parts = _SOURCE_HEADER.split(page_markdown or "")
-    counts = [len(_WHITESPACE.sub("", _MD_IMAGE.sub("", part))) for part in parts]
+    counts = [
+        len(_WHITESPACE.sub("", _AZURE_MARKUP.sub("", _MD_IMAGE.sub("", part))))
+        for part in parts
+    ]
     return max(counts, default=0)
 
 
@@ -53,8 +60,10 @@ def low_text_page_chars(markdown_by_page: dict[int, str], threshold: int | None)
 def build_pages_markdown(markdown_by_page: dict[int, str], low_text: dict[int, int]) -> str:
     """The page-numbered OCR text the analyze prompt embeds.
 
-    With `low_text` empty this is exactly the string Pipeline.extract_markdown
-    builds, which is what keeps VCC's request unchanged.
+    Same format as Pipeline.extract_markdown's markdown_with_pages_numbers.
+    Not guaranteed byte-identical to it (that one is built from the unstripped
+    OCR text), so the pipeline only calls this when a page is marked and keeps
+    its own string otherwise — that is what keeps VCC's request unchanged.
     """
     sections = []
     for page, txt in markdown_by_page.items():

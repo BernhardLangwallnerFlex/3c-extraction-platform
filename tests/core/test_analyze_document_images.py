@@ -195,3 +195,34 @@ def test_no_cap_leaves_the_pipeline_unmarked(tmp_path, monkeypatch):
     pipe, _ = _pipe(tmp_path, monkeypatch, {1: TEXT}, threshold=None)
     pipe.analyze_document()
     assert pipe.analyze_images_capped is False
+
+
+def test_cap_telemetry_counts_planned_images_like_the_cap(tmp_path, monkeypatch):
+    # OCR output for a page the PDF does not have must not shrink the count.
+    pages = {p: TEXT for p in range(1, 52)}
+    pipe, client = _pipe(tmp_path, monkeypatch, pages, threshold=150)
+    pipe.markdown_by_page = {**pages, 52: PHOTO}
+    with capture_logs() as logs:
+        pipe.analyze_document()
+    (capped,) = [e for e in logs if e["event"] == "analyze_images_capped"]
+    assert capped["images_planned"] == 51
+
+
+def test_page_missing_from_ocr_keeps_its_image(tmp_path, monkeypatch):
+    pipe, client = _pipe(tmp_path, monkeypatch, {1: TEXT, 2: PHOTO, 3: TEXT}, threshold=150)
+    del pipe.markdown_by_page[3]
+    pipe.analyze_document()
+    (blocks,) = client.blocks_seen
+    assert _texts(blocks)[1:] == ["Seite 1:", "Seite 3:"]
+    assert len(_images(blocks)) == 2
+
+
+def test_vcc_default_prompt_path_is_unchanged(tmp_path, monkeypatch):
+    from core.prompt_building.prompt_building import build_prompt_for_analyze_document
+    pipe, client = _pipe(tmp_path, monkeypatch, {1: TEXT, 2: PHOTO}, threshold=None)
+    pipe.product_config.analyze_prompt_builder = None
+    pipe.analyze_document()
+    (blocks,) = client.blocks_seen
+    expected = build_prompt_for_analyze_document(markdown_text=pipe.markdown_with_pages_numbers)
+    assert blocks[0] == {"type": "text", "text": expected}
+    assert [b["type"] for b in blocks[1:]] == ["image_url", "image_url"]

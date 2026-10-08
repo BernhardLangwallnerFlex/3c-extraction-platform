@@ -1,129 +1,84 @@
 # Cost Model — 3C Extraction Platform
 
-Rough, cautious cost model for the three products (vetcostcheck, BPS, Sanierer). **At launch volumes the fixed infrastructure floor — not LLM tokens — is the majority of the bill.** The per-doc unit cost is ~95% LLM, but actual volumes are low enough (a few hundred docs/month total) that the always-on floor dominates. The cost structure flips back to LLM-dominated only at ~5–20× growth.
+Reworked 2026-10-05 from **measured** data (Azure Cost Management, Azure Monitor metrics, worker logs for Sep 7 – Oct 5 2026), replacing the 2026-08-12 assumption-based model. All amounts EUR, excl. VAT.
 
-> All figures are estimates and err on the high side. The two biggest swing factors are (1) the gpt-5.4 token rate and (2) real pages/doc + photo-page share. Adjust the inputs below and the rest follows.
->
-> **Volume note:** the PO's 50 / 100 / 200 figures are **per month**, not per day. Real launch volume is ~350 docs/mo total. This makes the worker pools (which scale to zero) effectively free and leaves the standing infra as the cost driver — see §3.
+**Headline:** infrastructure, not tokens, is the main cost. OCR and LLM are each only 1–2 ¢/page, so optimising either needs a quality or reliability reason, not just cost. Per-document cost falls steeply with volume.
 
-## 1. Pricing inputs (the knobs)
+## 1. Indicative cost for 3C (shared with 3C 2026-10-05)
 
-**LLM — Azure OpenAI `gpt-5.4`, GlobalStandard (<272k context), Germany West Central** (Azure Foundry list price, 2026-06):
+Volumes as planned: 50 VCC / 100 BPS / 200 Sanierer docs per month (350 total). Infra €120/mo (assumes workers scale to zero — see §4) split equally per document = €0.34/doc.
 
-| | per 1M tokens (EUR) | per 1M tokens (USD, ÷0.8601) |
+| Product | Pages/doc | Infra €/doc | OCR €/doc | LLM €/doc | **All-in €/doc** | **All-in €/page** |
+|---|---|---|---|---|---|---|
+| VCC | ~5.1 | 0.34 | 0.06 | 0.10 | **0.50** | **0.10** (infra 0.067 · OCR 0.012 · LLM 0.019) |
+| BPS | ~15.8 | 0.34 | 0.21 | 0.10 | **0.65** | **0.04** (infra 0.022 · OCR 0.013 · LLM 0.006) |
+| Sanierer (est.) | ~5 | 0.34 | 0.06 | 0.11 | **0.50** | **0.10** (infra 0.069 · OCR 0.012 · LLM 0.022) |
+
+- Sanierer has **zero production jobs**, so its row is an estimate (5 pp, ~8K analyze in, ~10K extraction in / 5K out).
+- Allocating infra **per page** instead of per document gives €0.042/page for all products → all-in VCC ~0.07, BPS ~0.06, Sanierer ~0.08 €/page. Use per page if 3C is billed per page.
+- Volume effect (all-in €/doc at 350 / 1,750 / 7,000 docs/mo): VCC 0.50 / 0.25 / 0.20 · BPS 0.65 / 0.40 / 0.35 · Sanierer 0.50 / 0.26 / 0.21.
+- 3C-facing doc: https://claude.ai/code/artifact/949a51c2-41d1-46b7-9087-c775d73f5723
+
+## 2. Unit prices (observed 2026-10-05, Azure Retail Prices API, germanywestcentral)
+
+| Item | Price | Note |
 |---|---|---|
-| Input | €2.16 | ~$2.51 |
-| Cached input | €0.22 | ~$0.26 |
-| Output | €12.91 | ~$15.01 |
+| gpt-5.4 GlobalStandard | €2.20 in / €0.22 cached / €13.20 out per 1M | Billed effective €2.15–2.20 / €12.88–13.20. Code `PROMPT_RATE`/`COMPLETION_RATE` ($2.51/$15.01) ~2% low — fine. |
+| gpt-5.6-terra | $2.00 / $0.20 / $12.00 per 1M (+ cache write $2.50) | Now **20% cheaper than 5.4** (price cut 2026-08-01); the "+10% cost" argument against Terra is gone. |
+| gpt-5.4-mini | $0.75 / $4.50 per 1M | |
+| Azure Document Intelligence **Layout** (`prebuilt-layout`, what we call) | €8.80 / 1K pages | Read would be €1.32 / 1K. |
+| Mistral OCR (`mistral-ocr-latest`) | $4 / 1K pages (OCR 4.1) | Alias target undocumented; OCR 3 was $2/1K. Billed outside Azure — check the Mistral invoice. |
+| Container Apps consumption | idle €2.6e-6 per vCPU-s and per GiB-s; active vCPU €2.1e-5 /s | A 4 vCPU / 8 GiB replica ≈ €80/mo idle. |
+| Redis Standard C0 | €34/mo billed | (`$40.15` is the USD list price.) Azure Cache for Redis retires 2028-09-30; Azure Managed Redis B0 HA ≈ €24/mo is the successor. |
 
-Output is ~6× input — **output tokens dominate the bill.** (Code: `core/processors/azure_processor.py` `PROMPT_RATE`/`COMPLETION_RATE` are set to the USD per-1K equivalents; cached input is not separately tracked.)
+## 3. Measured variable cost (prod, Sep 7 – Oct 5 2026)
 
-**OCR — DualOCR runs both engines on every page** (incl. photo pages): Mistral ~$0.001/page + Azure Document Intelligence Read ~$0.0015/page ≈ **$0.0025/page (~0.25 ¢)**.
-
-**Assumptions (adjust to taste):**
-- Window 6am–8pm weekdays → **~22 business days/mo**. At launch volume (a few docs/day per product), worker pools sit cold ~99% of the time.
-- Tokens per *content* page: ~6K input + ~1.5K output (from production logs).
-- Avg pages/doc & photo share: **VetCost** 2 pp / 0% · **BPS** 4 pp / ~35% · **Sanierer** 5 pp / ~10%.
-
-## 2. Unit economics
-
-Two page types (photo-only pages are OCR'd and included in the analyze call but get **no extraction call**):
-
-| Page type | ~Cost |
-|---|---|
-| Content page (invoice/quote text) | **~3.5 ¢** (OCR + analyze share + extraction) |
-| Photo-only page | **~0.6 ¢** (OCR + image in analyze; no extraction) |
-
-**Per document** and **blended per page** (cautious, EUR):
-
-| Product | €/page (blended) | €/doc |
+| | BPS | VCC |
 |---|---|---|
-| VetCost | ~3.0 ¢ | ~6 ¢ |
-| BPS | ~2.3 ¢ | ~9 ¢ |
-| Sanierer | ~3.2 ¢ | ~16 ¢ |
+| Jobs/month | ~390 | ~56 |
+| Pages/doc (median / p90 / max) | 14 / 28 / 94 | 4 / 11 / 17 |
+| Sub-docs/doc (median / p90) | 1 / 3 | 1 / 3 |
+| Analyze tokens/doc (in / out) | 15.8K / 87 | 8.2K / 347 |
+| Extraction tokens/doc (in / out) | 11.7K / 2.6K | 11.1K / 3.9K |
+| LLM €/doc | 0.096 | 0.099 |
+| OCR €/doc | 0.193 (+ ~0.02 wasted on failed runs) | 0.061 |
 
-- **BPS is cheaper per page** only because ~35% of its pages are photo-only (OCR but no extraction); its content pages still cost ~3.5 ¢.
-- **Sanierer is the most expensive per doc** — its dense LV tables (17–41 line items) produce ~5–6K **output** tokens/doc, and output is the €12.91/1M term.
+- **OCR = Document Intelligence (€0.0088/page) + Mistral (€0.0034/page) ≈ €0.012/page**, both engines on every page incl. photo pages. For BPS, OCR is ~⅔ of variable cost.
+- BPS LLM/page is low because ~⅓ of pages are photos (OCR'd, included in analyze, no extraction call).
+- **Retry/failure overhead (BPS): ~+7%.** 12 of 385 runs failed (3.1%), 10 of them >50 pages on the analyze `Too many images in request: 51, maximum allowed: 50` — after full DualOCR. Content-filter fallback 0.5% of analyze calls. VCC: none.
+- Totals (all tiers + local experiments): gpt-5.4 Sep 12.1M in / 1.3M out = €43; DocIntel Sep 7,508 billed pages = €64.
 
-## 3. Monthly cost — volume scenarios (docs/**month**)
+## 4. Infrastructure (Cost Management, actual)
 
-The per-page **unit** cost (pure LLM+OCR, ~2.9 ¢ blended) is identical across scenarios. What changes is the **effective** ¢/page — total monthly cost ÷ pages/mo — because the fixed infra floor is amortized over low volume. Pages/mo: Vet 2 pp · BPS 4 pp · Sani 5 pp (e.g. Scenario A = 50×2 + 100×4 + 200×5 = **1,500 pages/mo**).
+| | Aug | Sep | Oct 1–5 |
+|---|---|---|---|
+| **Total (3C RGs + DocIntel)** | €462 | €702 | €93 |
+| Workers prod (3) | €130 | €244 | |
+| Workers test (3) | €125 | €240 | |
+| APIs + VCC UI | ~€48 | €40 | |
+| Redis | €20 | €34 | |
+| ACR + web test + storage | ~€16 | €15 | |
+| DocIntel / OpenAI (variable) | €53 / €40 | €64 / €43 | |
 
-### Table 1 — current config (API `min-replicas 1`, always warm)
+- The step on **2026-08-18** is all six workers going `min-replicas 1` at 4 vCPU / 8 GiB (KEDA scale-in workaround, `docs/HANDOVER-2026-08-18.md`). Billed almost entirely at the idle rate: ~€80/worker/month, not the $300 worst case in the handover.
+- **2026-10-05: test workers set back to `min-replicas 0`** → −€240/mo. Fixed 3C floor now ≈ **€335/mo** (prod workers €244 + APIs/UI €40 + Redis €34 + misc €15).
+- **Target floor once the KEDA fix lands and prod workers scale to zero:** ≈ €90–100/mo + active compute (~€0.02/doc). §1 uses €120 as a rounded, slightly conservative figure.
+- Not 3C: `ca-garagenhub` + `-ui` (~€20/mo) run in the same RG/environment — exclude from 3C costing.
+- DocIntel resource `document-intelligence-2510` lives in RG `company_finder`; Sep billed ~1.1K more pages than the metric → may be shared with another consumer.
 
-| Scenario | docs/mo (Vet/BPS/Sani) | pages/mo | OCR+LLM | Infra (floor+worker) | **Total/mo** | unit ¢/pg | **eff. ¢/pg** |
-|---|---|---|---|---|---|---|---|
-| **A — launch** | 50 / 100 / 200 | 1,500 | ~€44 | ~€55 + ~€4 | **~€103** | ~2.9 | **~6.9** |
-| **B — 5×** | 250 / 500 / 1,000 | 7,500 | ~€220 | ~€55 + ~€12 | **~€287** | ~2.9 | **~3.8** |
-| **C — 20×** | 1,000 / 2,000 / 4,000 | 30,000 | ~€880 | ~€55 + ~€35 | **~€970** | ~2.9 | **~3.2** |
+## 5. Cost levers
 
-### Table 2 — API scaled to zero (`min-replicas 0`)
+In order of impact at current volume:
 
-Drops the ~€33/mo always-on API replicas; floor becomes Redis €16 + Blob/ACR €8 ≈ **€24**. Trade-off: a few-second cold start on the first upload after idle.
+1. **Prod workers back to scale-to-zero** (needs the KEDA fix: orphaned-job sweep + understanding the scale-from-zero stall) — ~€240/mo.
+2. **Fail >50-page documents before OCR**, or fix the analyze 50-image limit — ~10% of BPS OCR spend and the failures 3C reported.
+3. **DocIntel Layout → Read**, if Read's table output is good enough — BPS ~−€0.12/doc. Needs a quality A/B.
+4. **Pin a cheaper Mistral OCR model** (OCR 3 at $2/1K) if quality holds — ~−€0.002/page.
+5. **gpt-5.6-terra** — ~10% cheaper than 5.4 at equal quality (eval 2026-07-27). Set extraction `detail: "high"` explicitly first: on 5.6, `auto` = `original` (no resize, up to ~36K tokens per image, rejected above 30K patches).
 
-| Scenario | docs/mo (Vet/BPS/Sani) | pages/mo | OCR+LLM | Infra (floor+worker) | **Total/mo** | unit ¢/pg | **eff. ¢/pg** |
-|---|---|---|---|---|---|---|---|
-| **A — launch** | 50 / 100 / 200 | 1,500 | ~€44 | ~€24 + ~€4 | **~€72** | ~2.9 | **~4.8** |
-| **B — 5×** | 250 / 500 / 1,000 | 7,500 | ~€220 | ~€24 + ~€12 | **~€256** | ~2.9 | **~3.4** |
-| **C — 20×** | 1,000 / 2,000 / 4,000 | 30,000 | ~€880 | ~€24 + ~€35 | **~€939** | ~2.9 | **~3.1** |
+## 6. How to refresh these numbers
 
-**Read-out:** At launch (Scenario A), the effective cost is ~2.4× the unit cost (6.9 ¢ vs 2.9 ¢), driven entirely by the fixed floor over low volume. Scaling the API to zero brings it to ~4.8 ¢/page (~30% cut) — the single biggest lever while volumes are small. By Scenario B/C the gap collapses (LLM is the majority again), so flip the API back to `min 1` (always-warm) once consistently at Scenario-B levels. Excludes the VetCost UI app (~€12/mo). USD totals are ~+16%.
-
-## 4. Infrastructure detail
-
-- **Standing floor (~€55/mo, flat):** 3× API replicas (`min-replicas 1`, 0.5 vCPU/1 GiB, ~idle) ≈ €33 + Redis Basic C0 ≈ €16 + Blob/ACR ≈ €8. Runs 24/7 regardless of volume. **This is the dominant cost at launch volume.** Setting the API to `min-replicas 0` removes the ~€33 (floor → ~€24) at the cost of a few-second cold start on the first request after idle — see §3 Table 2.
-- **Worker compute (volume-driven, near-zero at launch):** 3× worker pools (2 vCPU/4 GiB, `min 0` → scale to zero, `max 5`, KEDA on queue length, 1200s cooldown). At launch volume (a few docs/day per product) the pools are cold ~99% of the time — each doc/batch wakes a replica for seconds, then a 20-min idle cooldown before scaling back to zero ≈ **~€2–5/mo**. Grows to ~€12 (B) → ~€35 (C). One RQ worker = 1 doc at a time; the pool gives parallelism.
-- **Peak headroom:** even Scenario-C peaks sit well under one product's 5-worker capacity (~240 docs/hr); if traffic is bursty, raise `max-replicas` 5→10 per product (only billed during the burst).
-- Excludes `ca-vetcostcheck-ui` (~€12/mo).
-
-## 5. Per-document breakdown (worked example)
-
-Based on `VCC_Viele_Dokumente.pdf` (6 pages, 4 invoices), gpt-5.4, DualOCR:
-
-| Step | Cost | % |
-|------|------|---|
-| OCR (Mistral $0.006 + Azure $0.009) | $0.015 | 7.9% |
-| Analysis (1 LLM call, 9.6K in / 626 out) | $0.033 | 17.6% |
-| Extraction (4 LLM calls, 17.7K in / 6.5K out) | $0.141 | 74.5% |
-| **Total** | **$0.190** | |
-| Per page | $0.032 | |
-
-Extraction dominates (74.5%), driven by the $15/1M output rate. Invoice 3 alone (22 items, 4K output tokens) costs $0.077. A typical 1–2 page single-invoice doc ≈ $0.03–0.06.
-
-## 6. Cost levers (in order of impact)
-
-Impact ordering is **volume-dependent**. At launch volume the fixed infra floor dominates, so the token levers barely move the bill; at Scenario B/C they're back on top.
-
-**At launch volume (Scenario A) — attack the fixed floor:**
-1. **API `min-replicas 1 → 0`** — saves ~€33/mo (~30% of the total bill at launch), at the cost of a few-second cold start on the first upload after idle. Biggest single lever while volumes are small. Flip back to `min 1` once consistently at Scenario-B levels.
-
-**At growth volume (Scenario B/C) — attack LLM tokens:**
-2. **Cut output tokens** — the dominant cost, especially Sanierer. Terser JSON (shorten/normalize `name`, drop `source.snippet` if unused downstream, brief `warnings`) reduces the €12.91/1M side directly.
-3. **gpt-5.4-mini** — ~2.8× cheaper (see below); revisit accuracy on dense docs before switching.
-4. **Prompt caching** (cached input €0.22 vs €2.16) — only helps if the prompt is reordered so the static instructions/schema form a stable prefix (currently OCR text sits mid-prompt). Input is the smaller half, so modest.
-5. **Skip extraction on photo pages** — already the behavior (photo pages aren't part of any subdocument); keep it.
-
-## 7. gpt-5.4 vs gpt-5.4-mini (estimated)
-
-Same token counts, different pricing. Mini not yet validated with the current pipeline (DualOCR + hardened prompt).
-
-| Step | gpt-5.4 | gpt-5.4-mini | Diff |
-|------|---------|--------------|------|
-| OCR | $0.015 | $0.015 | same |
-| Analysis | $0.033 | $0.010 | ~3.3× less |
-| Extraction | $0.141 | $0.042 | ~3.3× less |
-| **Total** | **$0.190** | **$0.067** | **~2.8× less** |
-| Per page | $0.032 | $0.011 | |
-
-Mini ≈ 1 ¢/page vs ~3 ¢/page. Earlier benchmarking showed consistency issues (e.g. 9 vs 20 items extracted), but that predates the DualOCR + prompt improvements — worth revisiting if cost matters at scale.
-
-## 8. vs. old pipeline (LandingAI + gpt-4o)
-
-| Step | Old | New | Change |
-|------|-----|-----|--------|
-| OCR | $0.180 | $0.015 | −92% |
-| Analysis | $0.030 | $0.033 | +10% (images added) |
-| Extraction | $0.109 | $0.141 | +30% (gpt-5.4 output costs more) |
-| **Total** | **$0.319** | **$0.190** | **−41%** |
-
-Net −41% despite gpt-5.4's higher output price, because OCR cost collapsed (~12× cheaper moving from LandingAI to DualOCR).
+- Cost: Cost Management Query API (`ActualCost`, group by `ResourceId` + `Meter`), scope RGs `rg-3c-invoice`, `3c_information_extraction` + the DocIntel resource. Max 2 groupings per query; expect 429s (wait ~65 s).
+- Tokens: `az monitor metrics list` on `3cinfoextraction`, metrics `InputTokens OutputTokens`, one month per query (a 66-day window silently drops data).
+- DocIntel pages: metric `ProcessedPages` on `document-intelligence-2510`.
+- Per-job tokens: worker logs in Log Analytics (`ContainerAppConsoleLogs_CL`, events `analyze_llm_call`, `llm_call`); only 30 days of retention, and the lines carry no `file_id` (match by replica + time order).

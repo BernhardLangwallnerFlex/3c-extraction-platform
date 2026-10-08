@@ -107,16 +107,20 @@ See `.env.example` for the full list with defaults.
 ## Deployment
 Deployed on Azure Container Apps (API + worker) with Azure Cache for Redis (**Standard C0** since 2026-08-24, was Basic C0), Azure Blob Storage, and Azure OpenAI. See `azure_deployment_plan.md` for full infrastructure details and `deploy.sh` for the deployment script. The Dockerfile sets `PYTHONPATH=/app`.
 
-Workers use KEDA scaling on Redis queue length (1200s cooldown), but **every worker is `min-replicas 1`, not 0** — they are always-on. Scale-to-zero was given up as the mitigation for the KEDA scale-in kills (workers were being SIGTERMed mid-job); see `docs/HANDOVER-2026-08-18.md`. Verified 2026-08-24 across all twelve apps:
+Workers use KEDA scaling on Redis queue length (cooldown 1800s prod, 300s test). **Production workers are `min-replicas 1`, not 0** — always-on. Scale-to-zero was given up there as the mitigation for the KEDA scale-in kills (workers were being SIGTERMed mid-job); see `docs/HANDOVER-2026-08-18.md`. **Test workers went back to `min-replicas 0` on 2026-10-05** — they cost ~€80/mo each idle (as much as prod) for near-zero traffic, and testing comes in bursts; the scale-in kill risk is accepted on test. Verified 2026-10-05:
 
 | App | prod | test |
 |---|---|---|
 | `ca-api-<product>` | `1 / 3` | `0 / 2` |
-| `ca-worker-<product>` | `1 / 5` | `1 / 2` |
+| `ca-worker-<product>` | `1 / 5` | `0 / 2` |
 
-Note the **test APIs are the only apps that still scale to zero**, so the first request to a `*-test` hostname after an idle period is a cold start — it can take well over 15s and will time out a short client deadline. Retry before concluding a test deploy is broken.
+Note the **whole test tier scales to zero** (API and worker), so the first request to a `*-test` hostname after an idle period is a cold start — it can take well over 15s and will time out a short client deadline — and the first job then waits for KEDA (30s polling) plus a worker cold start. Retry before concluding a test deploy is broken. A test job running longer than the 300s cooldown can still be scaled in mid-job (the known KEDA issue).
 
-One consequence worth knowing: because nothing scales to zero, an outage on the shared Redis hits all six worker apps at once rather than only the busy ones.
+One consequence worth knowing: because the prod workers never scale to zero, an outage on the shared Redis hits all three prod worker apps at once rather than only the busy ones.
+
+### Network access
+
+All six API apps (prod **and** test, since 2026-09-07) are fenced by an identical 103-rule Container Apps ingress IP allowlist. It exists **only in Azure** — nothing in this repo references it, so `grep` will not find it. Blocked callers get `403 RBAC: access denied`, and because rules are app-wide that includes `/healthz`. Storage and Redis are *not* network-fenced; they are key-auth only. See `docs/network-access.md` for the inventory, the append-only-growth problem, and the cleanup plan.
 
 ### Two-tier deploys (prod + test)
 

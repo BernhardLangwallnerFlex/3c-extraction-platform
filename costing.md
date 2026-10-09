@@ -70,6 +70,7 @@ Volumes as planned: 50 VCC / 100 BPS / 200 Sanierer docs per month (350 total). 
 
 In order of impact at current volume:
 
+0. **Workers 4 vCPU / 8 GiB → 2 vCPU / 4 GiB — DECIDED 2026-10-09, not yet applied.** The 8 GiB (2026-08-18) was for the OCR render peak of the old code (5.18 GiB measured in prod on 09-21). With the per-page pixel cap and the 150 Mpx canvas (cc8a46a), `scripts/render_memory_probe.py` measured a worst-case job peak of **1.27 GiB** over the 11 worst corpus documents (all pages forced into one subdocument; macOS, so plan ~1.5 GiB on Linux). Worker CPU never exceeded ~1.04 vCPU in 30 days. **Order:** promote `v20261008a` to prod → watch `WorkingSetBytes` for a few days → `az containerapp update -n ca-worker-<product>[-test] -g rg-3c-invoice --cpu 2.0 --memory 4Gi` for all six workers (then re-check the KEDA scale block, as after the 08-18 resize). Saves ~€120/mo on the three always-on prod workers.
 1. **Prod workers back to scale-to-zero** (needs the KEDA fix: orphaned-job sweep + understanding the scale-from-zero stall) — ~€240/mo.
 2. **Fail >50-page documents before OCR**, or fix the analyze 50-image limit — ~10% of BPS OCR spend and the failures 3C reported.
 3. **DocIntel Layout → Read**, if Read's table output is good enough — BPS ~−€0.12/doc. Needs a quality A/B.
